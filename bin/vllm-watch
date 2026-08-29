@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Live vLLM status across both Sparks: load progress while starting,
+# throughput and queue depth once serving.
+#
+#   bin/vllm-watch            both nodes, refresh every 2s
+#   bin/vllm-watch spark1     one node
+#   bin/vllm-watch spark1 5   one node, 5s refresh
+set -u
+CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.ssh/config"
+HOSTS=${1:-"spark1 spark2"}
+INTERVAL=${2:-2}
+
+probe() {   # $1 = host
+  ssh -F "$CFG" -o BatchMode=yes -o ConnectTimeout=5 "$1" '
+    svc=$(systemctl is-active vllm 2>/dev/null)
+    code=$(curl -s -o /dev/null -w "%{http_code}" -m 2 http://127.0.0.1:8000/health 2>/dev/null)
+    if [ "$code" = "200" ]; then
+      # Serving: pull the gauges that matter from the Prometheus endpoint.
+      curl -s -m 3 http://127.0.0.1:8000/metrics 2>/dev/null | awk -v svc="$svc" "
+        /^vllm:num_requests_running/       {run=\$2}
+        /^vllm:num_requests_waiting/       {wait=\$2}
+        /^vllm:gpu_cache_usage_perc/       {kv=\$2}
+        /^vllm:generation_tokens_total/    {gen=\$2}
+        /^vllm:prompt_tokens_total/        {pr=\$2}
+        END {printf \"SERVING|%d|%d|%.1f|%d|%d\", run, wait, kv*100, gen, pr}"
+    else
+      # Not serving: report the most recent meaningful log line.
+      line=$(sudo -n journalctl -u vllm -n 40 --no-pager -o cat 2>/dev/null \
+             | grep -aE "Loading safetensors|Capturing CUDA graph|torch.compile|Dynamo|Starting vLLM|init engine|Application startup" \
+             | tail -1 | cut -c1-70)
+      printf "LOADING|%s|%s" "$svc" "${line:-starting}"
+    fi'
+}
+
+prev_gen=(); prev_t=()
+# Only take over the screen on a real terminal; in a pipe just append lines so
+# the output stays useful in a log or through head/tail.
+TTY=0; [ -t 1 ] && TTY=1
+[ $TTY -eq 1 ] && { printf "\033[?25l"; trap 'printf "\033[?25h\n"' EXIT; }
+while true; do
+  out=""
+  i=0
+  for h in $HOSTS; do
+    raw=$(probe "$h" 2>/dev/null)
+    IFS='|' read -r state a b c d e <<< "$raw"
+    now=$(date +%s.%N)
+    if [ "$state" = "SERVING" ]; then
+      rate="-"
+      if [ -n "${prev_gen[$i]:-}" ]; then
+        dt=$(echo "$now - ${prev_t[$i]}" | bc)
+        dg=$(( d - prev_gen[i] ))
+        rate=$(echo "scale=1; $dg / $dt" | bc 2>/dev/null)
+      fi
+      prev_gen[$i]=$d; prev_t[$i]=$now
+      out+=$(printf "  \033[32m%-7s SERVING\033[0m  running=%-3s queued=%-3s kv=%5s%%  gen=%s tok/s\n" \
+             "$h" "$a" "$b" "$c" "$rate")
+    else
+      out+=$(printf "  \033[33m%-7s %-8s\033[0m %s\n" "$h" "$a" "$b")
+    fi
+    out+=$'\n'
+    i=$((i+1))
+  done
+  if [ $TTY -eq 1 ]; then
+    printf "\033[H\033[2J%s  vLLM cluster\n\n%s" "$(date +%T)" "$out"
+  else
+    printf "%s\n%s" "$(date +%T)" "$out"
+  fi
+  sleep "$INTERVAL"
+done

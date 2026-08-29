@@ -1,0 +1,56 @@
+{{ ansible_managed | comment }}
+# Serving {{ ms_model_repo }} as "{{ _ms_served_name }}" on port {{ ms_port }}.
+# Regenerate with: ansible-playbook site.yml --limit {{ inventory_hostname }}
+
+[Unit]
+Description=vLLM model server ({{ _ms_served_name }})
+Documentation=https://docs.vllm.ai
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=15
+# Model load reads tens of GB from disk; do not let systemd time it out.
+TimeoutStartSec=0
+TimeoutStopSec=120
+
+# A stale container from an unclean shutdown would block the name.
+ExecStartPre=-/usr/bin/docker rm -f {{ ms_container_name }}
+
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --name {{ ms_container_name }} \
+    --gpus all \
+    --ipc=host \
+    --shm-size={{ ms_shm_size }} \
+    --publish {{ ms_port }}:8000 \
+    --volume {{ ms_cache_dir }}:/root/.cache/huggingface \
+    --volume {{ ms_compile_cache_dir }}:/root/.cache/vllm \
+    --env HF_HOME=/root/.cache/huggingface \
+{% if ms_hf_token | length > 0 %}
+    --env HF_TOKEN={{ ms_hf_token }} \
+{% endif %}
+    --env VLLM_LOGGING_LEVEL=INFO \
+    {{ ms_image }} \
+    --model {{ ms_model_repo }} \
+    --served-model-name {{ _ms_served_name }} \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --max-model-len {{ ms_max_model_len }} \
+    --gpu-memory-utilization {{ ms_gpu_memory_utilization }} \
+    --tensor-parallel-size {{ ms_tensor_parallel_size }} \
+    --dtype {{ ms_dtype }}{% if ms_trust_remote_code %} \
+    --trust-remote-code{% endif %}{% if ms_reasoning_parser | length > 0 %} \
+    --reasoning-parser {{ ms_reasoning_parser }}{% endif %}{% if ms_enable_auto_tool_choice %} \
+    --enable-auto-tool-choice{% endif %}{% if ms_tool_call_parser | length > 0 %} \
+    --tool-call-parser {{ ms_tool_call_parser }}{% endif %}{% for arg in ms_extra_args %} \
+    {{ arg }}{% endfor %}
+
+
+ExecStop=/usr/bin/docker stop --time 60 {{ ms_container_name }}
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,17 @@
+---
+# Each Spark is an independent inference node. Nothing here couples them, so a
+# node can be repointed at a different model or disabled without affecting the
+# other. Per-node configuration lives in host_vars/.
+#
+# Host names are deliberately the aliases from ../.ssh/config rather than real
+# hostnames. ansible.cfg passes that config to ssh, so "spark1" resolves along
+# with its IdentityFile. Setting ansible_host to spark-a01a.local would bypass
+# the Host block and fail on publickey.
+all:
+  children:
+    sparks:
+      hosts:
+        spark1:
+        spark2:
+      vars:
+        ansible_user: claude

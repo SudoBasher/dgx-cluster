@@ -1,0 +1,74 @@
+---
+# Defaults for the model_server role. Override per node in host_vars/.
+# The role is model-agnostic: it renders a systemd unit that runs one vLLM
+# container. Point a node at a different model by changing ms_model_repo.
+
+# Set false to stop the service, disable it and remove the unit. Use this to
+# free a node for a different workload.
+ms_enabled: true
+
+# Model
+ms_model_repo: ""                  # Hugging Face repo id, required when enabled
+ms_served_name: ""                 # name clients use in the API; defaults to repo basename
+ms_max_model_len: 262144
+
+# Serving
+ms_port: 8000
+ms_image: vllm/vllm-openai:latest
+ms_service_name: vllm
+ms_container_name: vllm
+
+# Fraction of unified memory vLLM may claim. GB10 shares one 121 GiB pool
+# between CPU and GPU, so this is not the usual "spare VRAM" setting: whatever
+# vLLM takes is unavailable to the host. 0.80 leaves roughly 26 GiB.
+ms_gpu_memory_utilization: 0.80
+
+ms_tensor_parallel_size: 1         # one GPU per node
+ms_trust_remote_code: true         # Qwen3.8 uses a custom architecture
+ms_dtype: auto                     # FP8 checkpoints are detected from config
+ms_extra_args: []                  # additional vLLM CLI flags
+
+# Separates chain-of-thought from the answer for reasoning models. Without it
+# the thinking text is returned inline as message content. Run
+#   docker run --rm --entrypoint bash IMAGE -c 'grep -n name= .../reasoning/__init__.py'
+# to list registered names. Empty disables parsing.
+ms_reasoning_parser: ""
+
+# Tool / function calling. Required by agent front ends: without both of these
+# vLLM rejects a request carrying tool_choice="auto" with
+#   400 "auto" tool choice requires --enable-auto-tool-choice and
+#   --tool-call-parser to be set
+# For Qwen3.x use "qwen3_xml" (an alias for the same Qwen3EngineToolParser that
+# "qwen3_coder" maps to). List available names with:
+#   docker run --rm --entrypoint bash IMAGE -c \
+#     'grep -oE "^ +\"[a-z0-9_]+\": \\(" /usr/local/lib/python3.12/dist-packages/vllm/tool_parsers/__init__.py'
+ms_enable_auto_tool_choice: false
+ms_tool_call_parser: ""
+
+# Host paths
+ms_cache_dir: /opt/dgx-models      # HF weights, persists across image changes
+# torch.compile output. Kept on a separate volume from the HF cache so the
+# existing weight download is not disturbed. Without this the container's
+# --rm discards the compiled kernels and every restart recompiles, adding
+# several minutes.
+ms_compile_cache_dir: /opt/dgx-vllm-cache
+ms_shm_size: 16g
+
+# Sync weights from a peer node over the interconnect instead of downloading
+# from Hugging Face. Set to the peer's interconnect hostname, e.g. "spark1-ic".
+# Uses the intra-cluster key from RUNBOOK.md section 7. Falls back to a normal
+# download if the peer does not have the model.
+ms_weights_peer: ""
+ms_weights_peer_key: /home/claude/.ssh/cluster
+
+# Optional; only needed for gated repos
+ms_hf_token: ""
+
+# Health check after (re)start
+ms_wait_for_health: true
+ms_health_timeout: 900
+
+# Weights are fetched in a separate step so the service does not sit in
+# "activating" for the length of a multi-GB download.
+ms_predownload: true
+ms_predownload_timeout: 7200

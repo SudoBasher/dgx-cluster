@@ -1,0 +1,38 @@
+---
+# AnythingLLM web front end. Off by default; enable per node in host_vars.
+
+allm_enabled: false
+
+allm_image: mintplexlabs/anythingllm:latest
+allm_port: 3001
+allm_service_name: anythingllm
+allm_container_name: anythingllm
+
+# Host paths. The container runs as an unprivileged user and writes here, so
+# ownership must match allm_uid/allm_gid or it fails to start.
+allm_base_dir: /opt/anythingllm
+allm_storage_dir: /opt/anythingllm/storage
+
+# The image's internal user is 1000:1000. Upstream documents this explicitly
+# and warns that a mismatch breaks startup. Note this is NOT the claude
+# account, which is 1001 on these nodes.
+allm_uid: 1000
+allm_gid: 1000
+
+# Pre-wire the LLM provider. host.docker.internal is mapped to the host gateway
+# in the unit, so this reaches vLLM on the host without hardcoding an IP.
+allm_llm_provider: generic-openai
+allm_llm_base_path: "http://host.docker.internal:8000/v1"
+allm_llm_model: ""                 # must match the vLLM --served-model-name
+# Deliberately below the model's real context window. AnythingLLM uses this to
+# decide how much history and RAG context to pack into a prompt, and prefill at
+# 262144 on this hardware takes long enough to look like a hang.
+allm_llm_token_limit: 32768
+allm_llm_api_key: "not-required"   # vLLM has no auth yet; see NEXT_STEPS.md
+
+# Leave the embedding engine and vector DB unset to use the built-in native
+# embedder and LanceDB, both of which run in-process and need no extra service.
+allm_extra_env: {}
+
+allm_wait_for_health: true
+allm_health_timeout: 300
