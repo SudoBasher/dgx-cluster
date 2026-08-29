@@ -1,0 +1,4 @@
+# SSH private keys — never commit
+.ssh/*
+!.ssh/*.pub
+!.ssh/config
