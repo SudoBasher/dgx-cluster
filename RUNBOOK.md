@@ -14,8 +14,8 @@ on both Sparks. `[spark1]` and `[spark2]` run on one only.
 
 | Alias | Hostname | Management IP | Management NIC |
 |---|---|---|---|
-| spark1 | `spark-a01a.local` | 10.255.194.68 | `enP7s7` |
-| spark2 | `spark-9d80.local` | 10.255.195.149 | `enP7s7` |
+| spark1 | `spark-a01a.tommyslab` | 10.255.129.236 | `enP7s7` |
+| spark2 | `spark-9d80.tommyslab` | 10.255.131.79 | `enP7s7` |
 
 Per node: NVIDIA GB10, 121 GiB unified memory, 3.7 TB NVMe, kernel
 6.17.0-1014-nvidia aarch64, driver 580.142, Docker 29.2.1, ConnectX-7.
@@ -113,15 +113,15 @@ sudo -u claude ls -la /home/claude/.ssh
 never falls back to a key in `~/.ssh` or the agent.
 
 ```sshconfig
-Host spark1 spark-a01a
-    HostName spark-a01a.local
+Host spark1 spark-a01a spark-a01a.tommyslab
+    HostName spark-a01a.tommyslab
     User claude
 
-Host spark2 spark-9d80
-    HostName spark-9d80.local
+Host spark2 spark-9d80 spark-9d80.tommyslab
+    HostName spark-9d80.tommyslab
     User claude
 
-Host spark1 spark2 spark-a01a spark-9d80
+Host spark1 spark2 spark-a01a spark-9d80 spark-a01a.tommyslab spark-9d80.tommyslab
     IdentityFile /home/user/storage/development/github/sudobasher/dgx-cluster/.ssh/dgx_spark
     IdentitiesOnly yes
     IdentityAgent none
@@ -130,7 +130,18 @@ Host spark1 spark2 spark-a01a spark-9d80
     ServerAliveCountMax 4
 ```
 
-First connection pins host keys to the repo-local `known_hosts`:
+The nodes moved from the `.local` (mDNS) network to the `tommyslab` domain on
+2026-08-27; management addresses changed with it. The extra `.tommyslab` host
+patterns exist because the `Host` block must match whatever name is typed, and
+a bare `spark-a01a` and a fully qualified `spark-a01a.tommyslab` are different
+patterns to ssh.
+
+The 192.168.100.x/101.x interconnect is unaffected by any of this. It is a
+private direct cable with static addresses, independent of the site network.
+
+First connection pins host keys to the repo-local `known_hosts`. Names that
+changed are pinned afresh, so expect new entries rather than a mismatch
+warning:
 
 ```bash
 for h in spark1 spark2; do
@@ -284,9 +295,39 @@ ib_write_bw -d rocep1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576
 ib_write_bw -d rocep1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576 192.168.100.2
 ```
 
+Both rails at once, which is the actual 200G test. The server side must stay in
+a live SSH session — backgrounding it with `nohup`/`setsid` over `ssh` leaves it
+dead and the client reports `Couldn't connect`:
+
+```bash
+# spark2, one shell
+ib_write_bw -d rocep1s0f0   -x 3 -F --report_gbits -q 2 -s 1048576 -D 15 -p 18515 &
+ib_write_bw -d roceP2p1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576 -D 15 -p 18516 &
+wait
+# spark1, one shell
+ib_write_bw -d rocep1s0f0   -x 3 -F --report_gbits -q 2 -s 1048576 -D 15 -p 18515 192.168.100.2 &
+ib_write_bw -d roceP2p1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576 -D 15 -p 18516 192.168.101.2 &
+wait
+```
+
 Expect about 112 Gb/s on one path and 196 Gb/s driving both. Latency via
 `ib_send_lat` should be about 1.7 µs. Do not use `ping` to judge the fabric; it
 reads 1.25 ms because ICMP goes through the kernel stack.
+
+Measured 2026-08-31: rail A alone 111.86 Gb/s, rail B alone 111.47 Gb/s, both
+together 98.04 + 98.04 = 196.08 Gb/s. `ib_send_lat` 1.38 µs typical, 1.48 µs at
+the 99th percentile. Both rails carry 8972-byte unfragmented pings. No
+`rx_crc_errors_phy`, `rx_symbol_error_phy`, or discards on either node.
+
+Check the PHY error counters after any bandwidth run:
+
+```bash
+sudo ethtool -S enp1s0f0np0 | grep -E 'crc_errors_phy|symbol_error_phy|discards_phy|link_down_events_phy'
+```
+
+A nonzero `link_down_events_phy` matching the number of `netplan apply` runs
+since boot is expected. CRC or symbol errors are not, and mean the cable or a
+transceiver needs reseating.
 
 ### Loop safety
 
@@ -345,12 +386,15 @@ ssh -F .ssh/config spark2 'ssh spark1-ic hostname'   # spark-a01a
 
 ## 8. Monitoring tooling `[each node]`
 
-DGX OS ships only `htop`, `top`, `sar` and `iostat`.
+DGX OS ships only `htop`, `top`, `sar` and `iostat`. Everything else is
+installed by the playbook from `node_packages` in
+`ansible/group_vars/all.yml` (nvtop, btop, glances, iftop, bmon, nload, dstat,
+sysstat, traceroute, mtr-tiny, iperf3, rsync). By hand:
 
 ```bash
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  nvtop btop glances iftop bmon dstat sysstat nload
+  nvtop btop glances iftop bmon dstat sysstat nload traceroute mtr-tiny iperf3 rsync
 ```
 
 A stale apt index can look like a missing package. On spark2 this failed with
@@ -499,10 +543,133 @@ Notes that cost a run each:
   `community.general.yaml` callback was removed in v12; use
   `result_format = yaml` with the default callback instead.
 - Do not set `ansible_host` in the inventory. The SSH config's `Host` blocks
-  match `spark1` and `spark-a01a`, not `spark-a01a.local`, so pointing Ansible
+  match `spark1` and `spark-a01a`, not `spark-a01a.tommyslab`, so pointing Ansible
   at the FQDN bypasses the `IdentityFile` and fails on publickey. Let the
   inventory hostnames be the SSH aliases.
 
 `ms_gpu_memory_utilization` defaults to 0.80 rather than the usual 0.90. GB10
 shares one 121 GiB pool between CPU and GPU, so whatever vLLM reserves is taken
 from the host, not from spare VRAM.
+
+---
+
+## 11. AWS infrastructure `[workstation]`
+
+OpenTofu, pinned to 1.12.6 by `required_version` so tenv selects it
+automatically. Profile `isc-eng-hpcresearch-dev`, account 376129860391,
+region us-west-2.
+
+State lives in S3 with native conditional-write locking, so there is no
+DynamoDB lock table. The bucket cannot exist before it is created, so the
+bootstrap runs once with local state:
+
+```bash
+cd terraform/bootstrap && tofu init && tofu apply
+cd ../            && tofu init && tofu apply
+```
+
+Everything is tagged `createdBy = tommy.aldo.sonin` through `default_tags`.
+
+`terraform.tfvars` holds NetBird setup keys and is gitignored.
+
+Two things worth knowing. An **S3 Gateway VPC Endpoint is required**, not
+optional: without it every Thanos block flush and chunk fetch would traverse
+the NAT instance. And `source_dest_check` must be false on netbird-cp or EC2
+drops forwarded packets.
+
+---
+
+## 12. NetBird control plane `[netbird-cp]`
+
+```bash
+cd ansible && ansible-playbook aws.yml
+```
+
+The upstream installer prompts on a TTY but reads environment variables when
+there is none, so Ansible drives it without a pty. `NETBIRD_DOMAIN` and
+`NETBIRD_LETSENCRYPT_EMAIL` are the only required ones.
+
+**Docker sets the FORWARD policy to DROP**, which silently breaks the NAT
+routing this host provides for the private subnet. Packets arrive and are
+dropped before reaching the masquerade rule, which then shows a zero packet
+count and appears correct. The accept rules must go in `DOCKER-USER`; Docker
+evaluates that chain first and never rewrites it.
+
+Create the first admin account by hand at `https://vpn.isc-spectro-sbx.click/setup`.
+That page exists only until the first user is created.
+
+Groups, setup keys and policies are then applied idempotently:
+
+```bash
+bin/netbird-config
+```
+
+Policy `ports` must be **strings**. Integers are rejected with a null body and
+HTTP 200, so the failure looks like success.
+
+---
+
+## 13. Observability stack `[obs-write, obs-read]`
+
+```bash
+cd ansible && ansible-playbook observability.yml
+```
+
+Split by role: obs-write runs Thanos receive, the compactor and Loki; obs-read
+runs Thanos query and store, Grafana and memcached. The split exists to keep
+bursty compaction away from user queries.
+
+Both self-enrol into the VPN first, then the stack comes up. Data goes to
+`s3://dgx-cluster-telemetry-376129860391` via the instance profile, so no keys
+appear in any config.
+
+Three traps, each of which cost a deploy cycle:
+
+- **Container uids differ per image**: thanos 1001, loki 10001, grafana 472.
+  Read them with `docker inspect -f '{{.Config.User}}'` rather than assuming.
+  A mismatch is a permission-denied crash loop.
+- **thanos-receive binds remote-write port + 100** (19391) for remote-write
+  gRPC, which no flag reveals. The compactor uses 10903 to avoid it.
+- Thanos uses kingpin, so **boolean flags reject `=value`** and fail with
+  `error: unexpected false`.
+
+---
+
+## 14. Telemetry agents `[sparks, observability]`
+
+```bash
+cd ansible && ansible-playbook telemetry.yml
+```
+
+Installs node_exporter with the ethtool collector enabled, dcgm-exporter on GPU
+hosts, and an OpenTelemetry Collector that scrapes locally and ships metrics to
+Thanos and logs to Loki over the VPN.
+
+Scrape intervals are 1s for everything except vLLM at 5s: its `/metrics`
+handler runs inside the serving process, and 60 scrapes a minute against a node
+already at 105 of 121 GiB risks perturbing what is being measured.
+
+The collector keeps a persistent on-disk queue so a network outage does not
+lose telemetry.
+
+Two things that are easy to get wrong:
+
+- **`ansible_managed` is injected by the `template` module only.** Referencing
+  it inside `copy: content:` fails with "undefined variable", and setting it in
+  `ansible.cfg` does not help.
+- **The journald receiver puts the whole journal entry in the log body**, not
+  in attributes. A transform is needed to set `service.name` from
+  `body["_SYSTEMD_UNIT"]` and to reduce the body to `body["MESSAGE"]`.
+  Without it every log is `unknown_service` and renders as a JSON blob.
+
+Verify:
+
+```bash
+ssh -F .ssh/config obs-read \
+  'curl -s "http://127.0.0.1:19192/api/v1/query?query=up" | jq -r ".data.result[].metric|\"\(.job)@\(.node)\""'
+```
+
+Expect node, otelcol, dcgm and vllm from both Sparks, plus the Thanos, Loki and
+Grafana components from both observability nodes.
+
+---

@@ -36,8 +36,8 @@ serving; everything node-specific lives in those two files.
 Endpoints are OpenAI-compatible:
 
 ```
-http://spark-a01a.local:8000/v1
-http://spark-9d80.local:8000/v1
+http://spark-a01a.tommyslab:8000/v1
+http://spark-9d80.tommyslab:8000/v1
 ```
 
 ## Deploy
@@ -139,14 +139,14 @@ ansible sparks -m uri -a "url=http://127.0.0.1:8000/v1/models return_content=yes
 Smoke test:
 
 ```bash
-curl -s http://spark-a01a.local:8000/v1/chat/completions \
+curl -s http://spark-a01a.tommyslab:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"hello"}],"max_tokens":32}'
 ```
 
 ## AnythingLLM
 
-Runs on spark1 only, at http://spark-a01a.local:3001. Enabled with
+Runs on spark1 only, at http://spark-a01a.tommyslab:3001. Enabled with
 `allm_enabled: true` in `host_vars/spark1.yml`; set `allm_enabled: false` and
 re-run to remove it.
 

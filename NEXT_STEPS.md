@@ -3,6 +3,32 @@
 Open work on the cluster, roughly in priority order. Current state is in
 `FINDINGS.md`; procedures are in `RUNBOOK.md` and `ansible/README.md`.
 
+## 0. Finish the cloud stack — mostly built
+
+Built and running as of 2026-09-02: VPC, NetBird VPN, Thanos, Loki, Grafana,
+and telemetry agents on all four hosts. Addresses in `ACCESS.md`. Four items
+remain.
+
+**Advertise the lab VLAN route.** `nbc_routes` is set in `host_vars` for both
+Sparks but the `netbird_client` role never calls the API to create the route,
+so `10.255.128.0/20` is not reachable over the VPN. The Sparks themselves are
+fine at their overlay addresses; this only affects lab hosts that cannot run a
+client. Needs a task posting to `/api/routes` with both Sparks as peers so the
+route survives one rebooting.
+
+**Disable the `All -> All` default policy.** The group policies are defined but
+not binding until it is off. Write `bin/netbird-lockdown` to do it, and verify
+teammate access is genuinely limited to Grafana afterwards rather than assuming.
+
+**Grafana dashboards.** Datasources are provisioned and data is flowing, but no
+dashboards are built yet. Standard NVIDIA and node_exporter dashboards need
+their GPU-memory panels replaced, since GB10 reports nothing there.
+
+**Decide on netbird-b.** Spark-to-AWS is Relayed, not Direct — NAT traversal
+fails through the UDM and will not be changed. Relay is therefore load-bearing
+and netbird-cp sits in the telemetry data path. This is the evidence the design
+said would decide it; adding the second node is now the reasonable call.
+
 ## 1. Add `ms_api_key` — deferred, do this later
 
 The vLLM endpoints are currently **unauthenticated and bound to 0.0.0.0**.
@@ -57,7 +83,7 @@ than replicas.
 
 ## 6. Connect AnythingLLM
 
-Generic OpenAI provider, base URL `http://spark-a01a.local:8000/v1`, model
+Generic OpenAI provider, base URL `http://spark-a01a.tommyslab:8000/v1`, model
 `qwen3.8-27b`. Set the token context window well below the 262144 the server
 advertises, or it will build prompts large enough to make prefill feel like a
 hang. Run it on the workstation, not on a Spark.

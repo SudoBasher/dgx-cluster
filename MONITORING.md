@@ -4,6 +4,72 @@ Every command here has been run against the live nodes. Tooling is installed by
 `RUNBOOK.md` section 8; if something reports "command not found", that section
 has not been replayed on that node.
 
+Two layers. **Grafana** is the day-to-day interface, holding 12 months of
+history. The CLI tools below are for the live view and for when Grafana itself
+is the thing that is broken.
+
+All addresses are NetBird overlay addresses and require the VPN. See
+`ACCESS.md`.
+
+## Grafana
+
+<http://100.123.229.83:3000>
+
+Metrics come from Thanos, logs from Loki, both provisioned as datasources.
+
+**Logs.** Explore, pick Loki, then filter by systemd unit:
+
+```logql
+{service_name="vllm.service"}
+{service_name="anythingllm.service"} |= "error"
+{node="spark1"} | json | priority <= 3
+```
+
+Kernel messages carry no unit and land under `unknown_service`.
+
+**Metrics.** Explore, pick Thanos. Useful starting points:
+
+```promql
+vllm:kv_cache_usage_perc                          # near 1.0 means preemption
+vllm:num_requests_waiting                         # above 0 means saturated
+rate(vllm:generation_tokens_total[1m])            # real tokens/s
+DCGM_FI_DEV_GPU_TEMP                              # per-GPU temperature
+node_memory_MemAvailable_bytes / 1024^3           # unified pool headroom
+rate(node_ethtool_transmitted_bytes_phy{device="enp1s0f0np0"}[1m])*8   # interconnect bits/s
+```
+
+Retention is tiered automatically: raw 1s for 30 days, 5-minute rollups for 12
+months, 1-hour for 3 years. Thanos picks the resolution per query, so a
+year-long dashboard stays fast.
+
+## Node labels
+
+Three labels identify a host, and only one works everywhere.
+
+| Label | Example | Set on |
+|---|---|---|
+| `node` | `spark1` | every job |
+| `host_name` | `spark-a01a` | every job |
+| `Hostname` | `spark-a01a` | DCGM only |
+
+Filter on `host_name` or `node`. Filtering on `Hostname` silently matches DCGM
+alone, which looks like the other exporters are not shipping when they are.
+
+Host metrics, all `node_exporter`:
+
+```promql
+100 - avg(rate(node_cpu_seconds_total{host_name="spark-a01a",mode="idle"}[1m]))*100
+node_memory_MemAvailable_bytes{host_name="spark-a01a"}
+rate(node_network_receive_bytes_total{host_name="spark-a01a",device="enP7s7"}[1m])*8
+rate(node_ethtool_transmitted_bytes_phy{host_name="spark-a01a",device="enp1s0f0np0"}[1m])*8
+rate(node_disk_read_bytes_total{host_name="spark-a01a"}[1m])
+node_load1{host_name="spark-a01a"}
+```
+
+`node_memory_*` is the only meaningful memory view on GB10. CPU and GPU share
+one 121 GiB pool, so DCGM reports nothing useful for GPU memory and stock
+NVIDIA dashboards show empty VRAM panels.
+
 ## Setup
 
 Two aliases, one for pipeable streams and one for interactive tools that need a
@@ -11,6 +77,7 @@ TTY. Put both in your shell rc.
 
 ```bash
 export DGX="ssh    -F /home/user/storage/development/github/sudobasher/dgx-cluster/.ssh/config"
+# Use spark1-vpn / spark2-vpn in place of spark1 / spark2 to go over the VPN.
 export DGXT="ssh -t -F /home/user/storage/development/github/sudobasher/dgx-cluster/.ssh/config"
 ```
 
@@ -20,11 +87,12 @@ Each node runs NVIDIA DGX Dashboard (`dgx-dashboard.service`) on
 127.0.0.1:11000, bound to loopback and unreachable without a tunnel.
 
 ```bash
-ssh -F /home/user/storage/development/github/sudobasher/dgx-cluster/.ssh/config \
-    -f -N -o ExitOnForwardFailure=yes -L 11001:127.0.0.1:11000 spark1
-ssh -F /home/user/storage/development/github/sudobasher/dgx-cluster/.ssh/config \
-    -f -N -o ExitOnForwardFailure=yes -L 11002:127.0.0.1:11000 spark2
+ssh -F .ssh/config -f -N -o ExitOnForwardFailure=yes -L 11001:127.0.0.1:11000 spark1-vpn
+ssh -F .ssh/config -f -N -o ExitOnForwardFailure=yes -L 11002:127.0.0.1:11000 spark2-vpn
 ```
+
+The `-vpn` aliases go over the overlay, so these work from anywhere and do not
+depend on the workstation's lab interface being up.
 
 | Node | URL |
 |---|---|
@@ -183,14 +251,14 @@ $DGX spark1 'sudo journalctl -u vllm -f -o cat | grep --line-buffered -E "Loadin
 vLLM exposes Prometheus metrics once it is serving. Useful gauges:
 
 ```bash
-$DGX spark1 'curl -s http://127.0.0.1:8000/metrics | grep -E "^vllm:(num_requests_running|num_requests_waiting|gpu_cache_usage_perc|generation_tokens_total|prompt_tokens_total)"'
+$DGX spark1 'curl -s http://127.0.0.1:8000/metrics | grep -E "^vllm:(num_requests_running|num_requests_waiting|kv_cache_usage_perc|generation_tokens_total|prompt_tokens_total)"'
 ```
 
 | Metric | Meaning |
 |---|---|
 | `num_requests_running` | Currently decoding |
 | `num_requests_waiting` | Queued, a sign of saturation |
-| `gpu_cache_usage_perc` | KV cache occupancy; near 1.0 means requests will start being preempted |
+| `kv_cache_usage_perc` | KV cache occupancy; near 1.0 means requests will start being preempted |
 | `generation_tokens_total` | Counter; difference over time gives tokens/s |
 | `prompt_tokens_total` | Counter; prefill volume |
 

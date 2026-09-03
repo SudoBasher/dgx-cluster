@@ -22,7 +22,7 @@ software rather than by the wire.
 
 | | |
 |---|---|
-| Nodes | `spark-a01a` (10.255.194.68), `spark-9d80` (10.255.195.149) |
+| Nodes | `spark-a01a` (10.255.129.236), `spark-9d80` (10.255.131.79) |
 | SoC | NVIDIA GB10, 48 SMs, compute capability 12.1 |
 | Memory | 121 GiB LPDDR5X-8533, 256-bit, unified CPU/GPU |
 | Storage | 3.7 TB NVMe, 3.5 TB free |
@@ -32,6 +32,11 @@ software rather than by the wire.
 
 Both nodes are configured identically and measured within 0.5% of each other on
 every test.
+
+Management addresses above are current. The nodes moved to the `tommyslab`
+domain on 2026-08-27, after these measurements were taken; nothing here depends
+on the site network, since the 192.168.100.x/101.x interconnect is a private
+direct cable.
 
 ## Memory bandwidth
 
