@@ -1,0 +1,16 @@
+---
+# NetBird self-hosted control plane, plus NAT routing for the private subnet.
+
+nbs_domain: vpn.isc-spectro-sbx.click
+nbs_acme_email: tommy.aldo.sonin@insightsoftmax.com
+nbs_install_dir: /opt/netbird
+
+# Installer options. The upstream script prompts interactively when a TTY is
+# present and reads these when one is not, so Ansible drives it without a pty.
+nbs_reverse_proxy_type: "0"      # 0 = bundled Traefik, automatic Let's Encrypt
+nbs_enable_proxy: "false"
+nbs_enable_crowdsec: "false"
+nbs_bind_localhost_only: "true"  # Traefik fronts it; the app needs no public bind
+
+# NAT for the private subnet. This host is its default route.
+nbs_nat_source_cidr: 10.200.10.0/24

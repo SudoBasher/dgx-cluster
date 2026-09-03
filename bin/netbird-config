@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Idempotent NetBird groups, setup keys and access policies.
+# Reads the API token from .secrets/netbird-token.
+#
+#   bin/netbird-config
+#
+# Does NOT disable the built-in "Default" All->All policy. Do that only once
+# every peer is enrolled and the policies below are confirmed working, or you
+# will cut your own access mid-build. See bin/netbird-lockdown.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+TOKEN=$(cat .secrets/netbird-token)
+API=${NETBIRD_API:-https://vpn.isc-spectro-sbx.click/api}
+auth=(-H "Authorization: Token $TOKEN" -H "Content-Type: application/json")
+
+api() { curl -sS -m 30 "${auth[@]}" "$@"; }
+
+group_id() { api "$API/groups" | jq -r --arg n "$1" '.[]|select(.name==$n)|.id' | head -1; }
+
+ensure_group() {
+  local name="$1" id
+  id=$(group_id "$name")
+  if [[ -n "$id" ]]; then echo "  group $name exists" >&2; else
+    id=$(api -X POST "$API/groups" -d "$(jq -nc --arg n "$name" '{name:$n,peers:[]}')" | jq -r .id)
+    echo "  group $name created" >&2
+  fi
+  echo "$id"
+}
+
+ensure_key() {   # name, comma-separated auto-group ids
+  local name="$1" groups="$2"
+  if api "$API/setup-keys" | jq -e --arg n "$name" 'any(.name==$n)' >/dev/null; then
+    echo "  setup-key $name exists" >&2; return
+  fi
+  api -X POST "$API/setup-keys" -d "$(jq -nc --arg n "$name" --argjson g "$groups" \
+    '{name:$n,type:"reusable",expires_in:2592000,revoked:false,auto_groups:$g,usage_limit:0,ephemeral:false}')" \
+    | jq -r '"  setup-key \(.name) created: \(.key)"' >&2
+}
+
+ensure_policy() { # name, src id, dst id, protocol, ports-json, bidirectional
+  local name="$1" src="$2" dst="$3" proto="$4" ports="$5" bidir="$6"
+  if api "$API/policies" | jq -e --arg n "$name" 'any(.name==$n)' >/dev/null; then
+    echo "  policy $name exists" >&2; return
+  fi
+  api -X POST "$API/policies" -d "$(jq -nc \
+      --arg n "$name" --arg s "$src" --arg d "$dst" --arg p "$proto" \
+      --argjson ports "$ports" --argjson bidir "$bidir" '
+      {name:$n, description:$n, enabled:true,
+       rules:[{name:$n, enabled:true, sources:[$s], destinations:[$d],
+               bidirectional:$bidir, protocol:$p, action:"accept"}
+              + (if ($ports|length)>0 then {ports:$ports} else {} end)]}')" \
+    | jq -r '"  policy \(.name) created"' >&2
+}
+
+echo "Groups:"
+G_ADMINS=$(ensure_group admins)
+G_TEAM=$(ensure_group teammates)
+G_SPARKS=$(ensure_group sparks)
+G_AWS=$(ensure_group aws-infra)
+G_OBSREAD=$(ensure_group obs-read)
+
+echo "Setup keys:"
+ensure_key admin-device      "[\"$G_ADMINS\"]"
+ensure_key teammate-device   "[\"$G_TEAM\"]"
+ensure_key spark-node        "[\"$G_SPARKS\"]"
+ensure_key aws-obs-write     "[\"$G_AWS\"]"
+# obs-read sits in both groups: aws-infra for admin access, obs-read so the
+# teammate Grafana policy can target it without exposing the write node.
+ensure_key aws-obs-read      "[\"$G_AWS\",\"$G_OBSREAD\"]"
+
+echo "Policies:"
+ensure_policy "admins-to-sparks"    "$G_ADMINS" "$G_SPARKS"  all '[]'     true
+ensure_policy "admins-to-aws"       "$G_ADMINS" "$G_AWS"     all '[]'     true
+ensure_policy "teammates-to-sparks" "$G_TEAM"   "$G_SPARKS"  all '[]'     true
+# One port, one destination. Teammates get Grafana and nothing else in AWS.
+# Ports must be STRINGS. Integers are rejected and the API returns a null
+# body rather than an error, so a failure here looks like a success.
+ensure_policy "teammates-to-grafana" "$G_TEAM"  "$G_OBSREAD" tcp '["3000"]' false
+
+echo
+echo "Default All->All policy is still enabled. Disable it with bin/netbird-lockdown"
+echo "after every peer is enrolled and verified."

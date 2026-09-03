@@ -1,0 +1,148 @@
+---
+- name: Install Docker and NAT persistence
+  become: true
+  block:
+    # Avoids the interactive "save current rules?" prompt from
+    # iptables-persistent.
+    - name: Preseed iptables-persistent
+      ansible.builtin.debconf:
+        name: iptables-persistent
+        question: "{{ item }}"
+        vtype: boolean
+        value: "false"
+      loop:
+        - iptables-persistent/autosave_v4
+        - iptables-persistent/autosave_v6
+
+    - name: Install packages
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - iptables-persistent
+          - curl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure Docker is running
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+# ---------------------------------------------------------------- routing --
+
+- name: Configure NAT routing for the private subnet
+  become: true
+  block:
+    - name: Enable IPv4 forwarding
+      ansible.posix.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_file: /etc/sysctl.d/99-netbird-nat.conf
+        sysctl_set: true
+        reload: true
+
+    - name: Discover the primary interface
+      ansible.builtin.shell:
+        cmd: ip -o -4 route show to default | awk '{print $5}' | head -1
+      register: _nbs_wan
+      changed_when: false
+
+    - name: Masquerade private subnet traffic
+      ansible.builtin.iptables:
+        table: nat
+        chain: POSTROUTING
+        source: "{{ nbs_nat_source_cidr }}"
+        out_interface: "{{ _nbs_wan.stdout }}"
+        jump: MASQUERADE
+        state: present
+      notify: save iptables
+
+    # Docker sets the FORWARD policy to DROP when it starts. Without these,
+    # private-subnet packets arrive here and are dropped before reaching the
+    # masquerade rule above, which then shows a zero packet count and looks
+    # like the NAT rule is wrong. Rules go in DOCKER-USER because Docker
+    # guarantees that chain is evaluated first and never rewrites it.
+    - name: Allow forwarding out of the private subnet
+      ansible.builtin.iptables:
+        chain: DOCKER-USER
+        source: "{{ nbs_nat_source_cidr }}"
+        jump: ACCEPT
+        action: insert
+        state: present
+      notify: save iptables
+
+    - name: Allow return traffic into the private subnet
+      ansible.builtin.iptables:
+        chain: DOCKER-USER
+        destination: "{{ nbs_nat_source_cidr }}"
+        ctstate: [ESTABLISHED, RELATED]
+        jump: ACCEPT
+        action: insert
+        state: present
+      notify: save iptables
+
+# ---------------------------------------------------------------- netbird --
+
+- name: Deploy NetBird
+  become: true
+  block:
+    - name: Ensure install directory exists
+      ansible.builtin.file:
+        path: "{{ nbs_install_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Fetch the installer
+      ansible.builtin.get_url:
+        url: https://github.com/netbirdio/netbird/releases/latest/download/getting-started.sh
+        dest: "{{ nbs_install_dir }}/getting-started.sh"
+        mode: "0750"
+
+    # The script writes docker-compose.yml into the working directory and
+    # brings the stack up. `creates` makes this idempotent: a second run is a
+    # no-op rather than a reinstall.
+    - name: Run the installer non-interactively
+      ansible.builtin.command:
+        cmd: bash getting-started.sh
+        chdir: "{{ nbs_install_dir }}"
+        creates: "{{ nbs_install_dir }}/docker-compose.yml"
+      environment:
+        NETBIRD_DOMAIN: "{{ nbs_domain }}"
+        NETBIRD_LETSENCRYPT_EMAIL: "{{ nbs_acme_email }}"
+        NETBIRD_REVERSE_PROXY_TYPE: "{{ nbs_reverse_proxy_type }}"
+        NETBIRD_ENABLE_PROXY: "{{ nbs_enable_proxy }}"
+        NETBIRD_ENABLE_CROWDSEC: "{{ nbs_enable_crowdsec }}"
+        NETBIRD_BIND_LOCALHOST_ONLY: "{{ nbs_bind_localhost_only }}"
+      register: _nbs_install
+
+    - name: Show installer output on first run
+      ansible.builtin.debug:
+        var: _nbs_install.stdout_lines
+      when: _nbs_install.changed
+
+    - name: Ensure the stack is up
+      ansible.builtin.command:
+        cmd: docker compose up -d
+        chdir: "{{ nbs_install_dir }}"
+      register: _nbs_up
+      changed_when: "'Started' in _nbs_up.stderr or 'Created' in _nbs_up.stderr"
+
+    - name: Wait for the dashboard to answer over TLS
+      ansible.builtin.uri:
+        url: "https://{{ nbs_domain }}/"
+        status_code: [200, 302, 307]
+        # Let's Encrypt issuance takes a moment on first boot.
+        validate_certs: true
+      register: _nbs_health
+      until: _nbs_health.status in [200, 302, 307]
+      retries: 30
+      delay: 10
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          NetBird up at https://{{ nbs_domain }} —
+          open it to create the first admin account at /setup.

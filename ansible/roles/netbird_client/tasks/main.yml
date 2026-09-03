@@ -1,0 +1,65 @@
+---
+- name: Fail without a setup key
+  ansible.builtin.assert:
+    that: nbc_setup_key | length > 0
+    fail_msg: "nbc_setup_key is unset for {{ inventory_hostname }}. Issue one with bin/netbird-config."
+
+- name: Install and enrol NetBird
+  become: true
+  block:
+    - name: Check whether the client is present
+      ansible.builtin.command: which netbird
+      register: _nbc_which
+      changed_when: false
+      failed_when: false
+
+    # The vendor script adds the apt repo and installs the package. Guarded so
+    # a re-run does not reinstall.
+    - name: Install the client
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://pkgs.netbird.io/install.sh | sh
+      when: _nbc_which.rc != 0
+      changed_when: true
+
+    - name: Check enrolment state
+      ansible.builtin.command: netbird status --json
+      register: _nbc_status
+      changed_when: false
+      failed_when: false
+
+    - name: Enrol with the management server
+      ansible.builtin.command:
+        argv:
+          - netbird
+          - up
+          - --management-url
+          - "{{ nbc_mgmt_url }}"
+          - --setup-key
+          - "{{ nbc_setup_key }}"
+          - --hostname
+          - "{{ nbc_hostname }}"
+      when: >-
+        _nbc_status.rc != 0
+        or (_nbc_status.stdout | default('{}') | from_json).management.connected | default(false) | bool == false
+      no_log: true
+      changed_when: true
+
+    - name: Ensure the service is enabled
+      ansible.builtin.systemd:
+        name: netbird
+        state: started
+        enabled: true
+
+    - name: Wait for the peer to report connected
+      ansible.builtin.command: netbird status --json
+      register: _nbc_final
+      until: (_nbc_final.stdout | from_json).management.connected | default(false) | bool
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    - name: Report overlay address and peer reachability
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} = {{ (_nbc_final.stdout | from_json).netbirdIp | default('?') }},
+          peers={{ (_nbc_final.stdout | from_json).peers.total | default(0) }}

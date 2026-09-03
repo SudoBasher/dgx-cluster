@@ -5,7 +5,7 @@
 #
 # Host names are deliberately the aliases from ../.ssh/config rather than real
 # hostnames. ansible.cfg passes that config to ssh, so "spark1" resolves along
-# with its IdentityFile. Setting ansible_host to spark-a01a.local would bypass
+# with its IdentityFile. Setting ansible_host to spark-a01a.tommyslab would bypass
 # the Host block and fail on publickey.
 all:
   children:
@@ -15,3 +15,16 @@ all:
         spark2:
       vars:
         ansible_user: claude
+
+    aws:
+      hosts:
+        netbird-cp:
+      vars:
+        ansible_user: ubuntu
+
+    observability:
+      hosts:
+        obs-write:
+        obs-read:
+      vars:
+        ansible_user: ubuntu

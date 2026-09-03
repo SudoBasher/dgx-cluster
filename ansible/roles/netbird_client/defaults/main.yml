@@ -1,0 +1,9 @@
+---
+# Joins a host to the NetBird overlay. Used for the AWS observability nodes and
+# for the Sparks.
+nbc_mgmt_url: https://vpn.isc-spectro-sbx.click
+nbc_setup_key: ""          # required; per-host in host_vars
+nbc_hostname: "{{ inventory_hostname }}"
+# Networks this peer advertises to others. Sparks advertise the lab VLAN so
+# VPN clients can reach hosts that cannot run a client themselves.
+nbc_routes: []
