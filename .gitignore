@@ -2,3 +2,13 @@
 .ssh/*
 !.ssh/*.pub
 !.ssh/config
+
+# Credentials. Never commit.
+.secrets/
+
+# OpenTofu variable files may hold setup keys
+*.tfvars
+*.tfvars.json
+.terraform/
+*.tfstate
+*.tfstate.*
