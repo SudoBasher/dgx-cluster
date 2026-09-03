@@ -1,0 +1,87 @@
+---
+- name: Install Docker
+  become: true
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure Docker is running
+  become: true
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+# Each image runs as a different non-root uid, read from its own config
+# rather than assumed: thanos 1001, loki 10001, grafana 472. Getting this
+# wrong shows up as "permission denied" on the data dir and a crash loop.
+- name: Create data directories with the uid each container runs as
+  become: true
+  ansible.builtin.file:
+    path: "{{ obs_dir }}/{{ item.dir }}"
+    state: directory
+    owner: "{{ item.uid }}"
+    group: "{{ item.uid }}"
+    mode: "0775"
+  loop: >-
+    {{ (obs_role == 'write')
+       | ternary([{'dir':'thanos-data','uid':1001},
+                  {'dir':'compact-data','uid':1001},
+                  {'dir':'loki-data','uid':10001}],
+                 [{'dir':'store-data','uid':1001},
+                  {'dir':'grafana-data','uid':472}]) }}
+  loop_control:
+    label: "{{ item.dir }} (uid {{ item.uid }})"
+
+- name: Write the S3 objstore config
+  become: true
+  ansible.builtin.template:
+    src: objstore.yml.j2
+    dest: "{{ obs_dir }}/objstore.yml"
+    mode: "0644"
+  notify: restart observability
+
+- name: Write Loki config
+  become: true
+  ansible.builtin.template:
+    src: loki.yml.j2
+    dest: "{{ obs_dir }}/loki.yml"
+    mode: "0644"
+  when: obs_role == 'write'
+  notify: restart observability
+
+- name: Write Grafana datasources
+  become: true
+  ansible.builtin.template:
+    src: datasources.yml.j2
+    dest: "{{ obs_dir }}/datasources.yml"
+    mode: "0644"
+  when: obs_role == 'read'
+  notify: restart observability
+
+- name: Write the compose file
+  become: true
+  ansible.builtin.template:
+    src: "compose-{{ obs_role }}.yml.j2"
+    dest: "{{ obs_dir }}/docker-compose.yml"
+    mode: "0644"
+  notify: restart observability
+
+- name: Bring the stack up
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ obs_dir }}"
+  register: _obs_up
+  changed_when: "'Started' in _obs_up.stderr or 'Created' in _obs_up.stderr or 'Recreated' in _obs_up.stderr"
+
+- name: Wait for the local health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ (obs_role == 'write') | ternary(10902, 3000) }}/{{ (obs_role == 'write') | ternary('-/ready', 'api/health') }}"
+    status_code: [200, 302]
+  register: _obs_health
+  until: _obs_health.status in [200, 302]
+  retries: 30
+  delay: 5

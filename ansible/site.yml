@@ -34,6 +34,34 @@
           Less than 100 GB free on {{ inventory_hostname }};
           model weights and the serving image will not fit.
 
+    - name: Ensure base packages are installed
+      become: true
+      ansible.builtin.apt:
+        name: "{{ node_packages | default([]) }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      register: _pkgs
+      # A stale index makes a present package look missing and aborts the whole
+      # transaction, taking the other packages with it. Retry once on a forced
+      # refresh before failing.
+      failed_when: false
+
+    - name: Force an index refresh and retry if the first pass failed
+      become: true
+      when: _pkgs.failed | default(false)
+      block:
+        - name: Drop the archive index
+          ansible.builtin.shell:
+            cmd: rm -f /var/lib/apt/lists/ports.ubuntu.com_*
+          changed_when: true
+
+        - name: Reinstall after refresh
+          ansible.builtin.apt:
+            name: "{{ node_packages | default([]) }}"
+            state: present
+            update_cache: true
+
     - name: Grant docker access to named accounts
       become: true
       ansible.builtin.user:

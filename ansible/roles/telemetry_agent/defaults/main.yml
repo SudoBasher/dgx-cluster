@@ -1,0 +1,23 @@
+---
+# OpenTelemetry Collector: scrapes local exporters, tails journald, ships both
+# to the observability nodes over the VPN.
+
+tel_otel_version: "0.160.0"
+tel_dcgm_image: "nvidia/dcgm-exporter:4.5.2-4.8.1-ubuntu22.04"
+
+# Overlay addresses of the sinks.
+tel_metrics_endpoint: ""           # thanos receive remote-write
+tel_logs_endpoint: ""              # loki OTLP
+
+tel_dir: /opt/telemetry
+
+# Set true on GPU hosts.
+tel_enable_dcgm: false
+
+# Scrape jobs, per host group. Interval is per job because 1s on
+# node_exporter is worth it and 1s on vLLM perturbs inference.
+tel_scrape_jobs: []
+
+# A lab link that has already changed once mid-project; size the queue for a
+# multi-hour outage rather than the default handful of batches.
+tel_queue_size: 20000

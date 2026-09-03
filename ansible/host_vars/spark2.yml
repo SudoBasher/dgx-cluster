@@ -24,3 +24,8 @@ ms_tool_call_parser: qwen3_xml
 # the model cached, which is what happens when this node is repointed at
 # something spark1 does not run.
 ms_weights_peer: spark1-ic
+
+# --- VPN -------------------------------------------------------------------
+nbc_setup_key: "{{ nbc_key_spark }}"   # spark-node -> sparks
+nbc_routes:
+  - "10.255.128.0/20"     # lab VLAN, for hosts that cannot run a client

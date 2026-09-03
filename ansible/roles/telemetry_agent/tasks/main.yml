@@ -1,0 +1,140 @@
+---
+- name: Sinks must be configured
+  ansible.builtin.assert:
+    that:
+      - tel_metrics_endpoint | length > 0
+      - tel_logs_endpoint | length > 0
+    fail_msg: "tel_metrics_endpoint / tel_logs_endpoint unset for {{ inventory_hostname }}"
+
+- name: Host metrics exporter
+  become: true
+  block:
+    - name: Install node_exporter
+      ansible.builtin.apt:
+        name: prometheus-node-exporter
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # The ethtool collector exposes tx_bytes_phy and friends, which is how the
+    # interconnect is measured. Not enabled by default.
+    - name: Enable the ethtool collector
+      ansible.builtin.copy:
+        dest: /etc/default/prometheus-node-exporter
+        mode: "0644"
+        content: |
+          # Ansible managed - local edits will be overwritten
+          ARGS="--collector.ethtool --collector.systemd"
+      notify: restart node_exporter
+
+    - name: Ensure node_exporter is running
+      ansible.builtin.systemd:
+        name: prometheus-node-exporter
+        state: started
+        enabled: true
+
+- name: GPU metrics exporter
+  become: true
+  when: tel_enable_dcgm
+  block:
+    - name: Run dcgm-exporter
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/dcgm-exporter.service
+        mode: "0644"
+        content: |
+          # Ansible managed - local edits will be overwritten
+          [Unit]
+          Description=NVIDIA DCGM exporter
+          After=docker.service
+          Requires=docker.service
+
+          [Service]
+          Restart=always
+          RestartSec=10
+          ExecStartPre=-/usr/bin/docker rm -f dcgm-exporter
+          ExecStart=/usr/bin/docker run --rm --name dcgm-exporter \
+            --gpus all --net host --cap-add SYS_ADMIN \
+            {{ tel_dcgm_image }}
+          ExecStop=/usr/bin/docker stop dcgm-exporter
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: reload systemd
+
+    - name: Enable dcgm-exporter
+      ansible.builtin.systemd:
+        name: dcgm-exporter
+        state: started
+        enabled: true
+        daemon_reload: true
+
+- name: OpenTelemetry Collector
+  become: true
+  block:
+    - name: Create directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ tel_dir }}"
+        - "{{ tel_dir }}/queue"
+
+    - name: Install the collector package
+      ansible.builtin.apt:
+        deb: >-
+          https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ tel_otel_version }}/otelcol-contrib_{{ tel_otel_version }}_linux_{{ (ansible_architecture == 'aarch64') | ternary('arm64', 'amd64') }}.deb
+      register: _tel_pkg
+
+    - name: Write the collector config
+      ansible.builtin.template:
+        src: otelcol.yaml.j2
+        dest: "{{ tel_dir }}/otelcol.yaml"
+        mode: "0644"
+      notify: restart otelcol
+
+    # The packaged unit reads /etc/otelcol-contrib/config.yaml; point it at
+    # ours instead of maintaining two copies.
+    - name: Point the service at our config
+      ansible.builtin.copy:
+        dest: /etc/otelcol-contrib/otelcol-contrib.conf
+        mode: "0644"
+        content: |
+          # Ansible managed - local edits will be overwritten
+          OTELCOL_OPTIONS="--config={{ tel_dir }}/otelcol.yaml"
+      notify: restart otelcol
+
+    # journald and the queue directory both need access the packaged user
+    # lacks by default.
+    - name: Let the collector read the journal
+      ansible.builtin.user:
+        name: otelcol-contrib
+        groups: systemd-journal,adm
+        append: true
+      notify: restart otelcol
+
+    - name: Own the queue directory
+      ansible.builtin.file:
+        path: "{{ tel_dir }}/queue"
+        state: directory
+        owner: otelcol-contrib
+        group: otelcol-contrib
+        mode: "0755"
+
+    - name: Ensure the collector is running
+      ansible.builtin.systemd:
+        name: otelcol-contrib
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Flush handlers before verifying
+      ansible.builtin.meta: flush_handlers
+
+    - name: Confirm the collector is healthy
+      ansible.builtin.command: systemctl is-active otelcol-contrib
+      register: _tel_active
+      until: _tel_active.stdout == "active"
+      retries: 6
+      delay: 5
+      changed_when: false

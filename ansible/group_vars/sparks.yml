@@ -1,0 +1,28 @@
+---
+# Telemetry sinks, both on obs-write over the VPN.
+tel_metrics_endpoint: "100.123.158.113"
+tel_logs_endpoint: "100.123.158.113"
+tel_enable_dcgm: true
+
+tel_journal_units:
+  - vllm
+  - anythingllm
+  - docker
+  - netbird
+
+# 1s everywhere except vLLM. Its /metrics handler runs inside the serving
+# process, and 60 scrapes a minute against a node already at 105 of 121 GiB
+# risks perturbing the thing being measured.
+tel_scrape_jobs:
+  - name: node
+    targets: ["127.0.0.1:9100"]
+    interval: 1s
+  - name: dcgm
+    targets: ["127.0.0.1:9400"]
+    interval: 1s
+  - name: vllm
+    targets: ["127.0.0.1:8000"]
+    interval: 5s
+  - name: otelcol
+    targets: ["127.0.0.1:8888"]
+    interval: 1s

@@ -23,3 +23,8 @@ ms_tool_call_parser: qwen3_xml
 # host.docker.internal, so it keeps working if the node's IP changes.
 allm_enabled: true
 allm_llm_model: qwen3.8-27b
+
+# --- VPN -------------------------------------------------------------------
+nbc_setup_key: "{{ nbc_key_spark }}"   # spark-node -> sparks
+nbc_routes:
+  - "10.255.128.0/20"     # lab VLAN, for hosts that cannot run a client

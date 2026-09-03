@@ -1,0 +1,55 @@
+# {{ ansible_managed }}
+# Ingest and compaction. Nothing here serves user queries.
+services:
+  thanos-receive:
+    image: {{ obs_thanos_image }}
+    container_name: thanos-receive
+    restart: always
+    network_mode: host
+    command:
+      - receive
+      - --tsdb.path=/data
+      # Blocks flush to S3 every 2h; local disk only holds the current head.
+      - --tsdb.retention=4h
+      - --grpc-address=0.0.0.0:10901
+      - --http-address=0.0.0.0:10902
+      # Bound to the overlay so the Sparks can push without a public endpoint.
+      - --remote-write.address={{ obs_write_ip }}:19291
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --label=replica="write"
+      - --label=cluster="dgx"
+      - --receive.local-endpoint={{ obs_write_ip }}:10901
+    volumes:
+      - {{ obs_dir }}/thanos-data:/data
+      - {{ obs_dir }}/objstore.yml:/etc/thanos/objstore.yml:ro
+
+  thanos-compact:
+    image: {{ obs_thanos_image }}
+    container_name: thanos-compact
+    restart: always
+    network_mode: host
+    command:
+      - compact
+      - --wait
+      - --data-dir=/data
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --http-address=0.0.0.0:10903
+      # Multi-resolution downsampling. This is what keeps a 12-month query
+      # fast: it scans 5m rollups rather than 31.5M raw points per series.
+      - --retention.resolution-raw={{ obs_retention_raw }}
+      - --retention.resolution-5m={{ obs_retention_5m }}
+      - --retention.resolution-1h={{ obs_retention_1h }}
+      - --compact.concurrency=2
+    volumes:
+      - {{ obs_dir }}/compact-data:/data
+      - {{ obs_dir }}/objstore.yml:/etc/thanos/objstore.yml:ro
+
+  loki:
+    image: {{ obs_loki_image }}
+    container_name: loki
+    restart: always
+    network_mode: host
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - {{ obs_dir }}/loki.yml:/etc/loki/loki.yml:ro
+      - {{ obs_dir }}/loki-data:/loki

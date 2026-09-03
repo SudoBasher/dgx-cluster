@@ -1,0 +1,3 @@
+---
+nbc_setup_key: "{{ nbc_key_obs_write }}"   # aws-obs-write -> aws-infra
+obs_role: write

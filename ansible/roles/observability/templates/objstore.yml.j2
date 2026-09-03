@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Credentials come from the EC2 instance profile, so none appear here.
+type: S3
+config:
+  bucket: {{ obs_bucket }}
+  endpoint: s3.{{ obs_region }}.amazonaws.com
+  region: {{ obs_region }}

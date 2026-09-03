@@ -21,3 +21,21 @@ ms_tensor_parallel_size: 1
 # Takes effect on the user's next login session.
 docker_users:
   - user
+
+# Packages installed on every node by site.yml. DGX OS ships only htop, top,
+# sar and iostat, so the monitoring and network tooling is added here rather
+# than by hand, which keeps a rebuilt node identical to a running one.
+node_packages:
+  - nvtop            # GPU utilisation, temps, per-process attribution
+  - btop
+  - glances
+  - htop
+  - iftop
+  - bmon
+  - nload
+  - dstat
+  - sysstat          # sar, iostat
+  - traceroute
+  - mtr-tiny         # traceroute plus continuous loss/latency per hop
+  - iperf3
+  - rsync            # peer weight sync between nodes

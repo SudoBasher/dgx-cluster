@@ -1,0 +1,28 @@
+---
+# Thanos + Loki + Grafana, S3-backed. Split across two nodes: obs-write takes
+# ingest and compaction, obs-read serves queries and the UI. The split exists
+# because compaction is bursty and would otherwise make dashboards sluggish.
+
+obs_role: write                    # write | read, set per host
+
+obs_bucket: dgx-cluster-telemetry-376129860391
+obs_region: us-west-2
+obs_dir: /opt/observability
+
+# Pinned. Resolved from the registries 2026-09-02.
+obs_thanos_image: quay.io/thanos/thanos:v0.42.4
+obs_loki_image: grafana/loki:3.6.16
+obs_grafana_image: grafana/grafana:13.0.8
+obs_memcached_image: memcached:1.6.45-alpine
+
+# Overlay addresses. Set from the NetBird API by the play.
+obs_write_ip: ""
+obs_read_ip: ""
+
+# Retention. Raw 1s data is only useful for incident forensics, so it is kept
+# briefly; the rollups Thanos builds carry the long tail cheaply.
+obs_retention_raw: 30d
+obs_retention_5m: 365d
+obs_retention_1h: 1095d
+
+obs_grafana_admin_password: admin   # change on first login

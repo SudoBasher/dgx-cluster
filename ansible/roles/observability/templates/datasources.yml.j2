@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+apiVersion: 1
+datasources:
+  - name: Thanos
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:19192
+    isDefault: true
+    jsonData:
+      timeInterval: 1s
+      httpMethod: POST
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://{{ obs_write_ip }}:3100

@@ -1,0 +1,7 @@
+---
+- name: restart observability
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose up -d --force-recreate
+    chdir: "{{ obs_dir }}"
+  changed_when: true
