@@ -572,10 +572,21 @@ Everything is tagged `createdBy = tommy.aldo.sonin` through `default_tags`.
 
 `terraform.tfvars` holds NetBird setup keys and is gitignored.
 
-Two things worth knowing. An **S3 Gateway VPC Endpoint is required**, not
-optional: without it every Thanos block flush and chunk fetch would traverse
-the NAT instance. And `source_dest_check` must be false on netbird-cp or EC2
-drops forwarded packets.
+Three things worth knowing.
+
+An **S3 Gateway VPC Endpoint is required**, not optional. It is free and keeps
+every Thanos block flush and chunk fetch inside the VPC.
+
+`source_dest_check` must be false on netbird-cp, or EC2 drops forwarded
+packets.
+
+**The observability subnet routes via the internet gateway, not the NAT
+instance**, despite still being named `private`. The nodes carry Elastic IPs so
+WireGuard hole punching can work; behind MASQUERADE it never could, because
+Linux does endpoint-dependent filtering and silently drops inbound hole-punch
+packets. They are not exposed: the security group admits UDP 51820 and nothing
+else, so SSH and Grafana remain overlay-only. This is what turned the
+Spark-to-AWS path from relayed at 82 ms into direct at 32 ms.
 
 ---
 
@@ -598,14 +609,21 @@ evaluates that chain first and never rewrites it.
 Create the first admin account by hand at `https://vpn.isc-spectro-sbx.click/setup`.
 That page exists only until the first user is created.
 
-Groups, setup keys and policies are then applied idempotently:
+Groups, setup keys, policies, routes and the lockdown are declarative:
 
 ```bash
-bin/netbird-config
+cd ansible && ansible-playbook netbird-access.yml
 ```
 
-Policy `ports` must be **strings**. Integers are rejected with a null body and
-HTTP 200, so the failure looks like success.
+The desired state lives in `roles/netbird_config/defaults/main.yml`. It runs
+against the API from localhost, needs no managed host, and converges to
+`changed=0` on a second run.
+
+Two things that bite. Policy `ports` must be **strings**; integers are rejected
+with a null body and HTTP 200, so the failure looks like success. And the
+policy set must include the machine-to-machine paths (`sparks-to-aws`,
+`aws-internal`) — without them, disabling the All-to-All default silently takes
+telemetry to zero, because nothing logs into those paths and nothing errors.
 
 ---
 
@@ -632,6 +650,38 @@ Three traps, each of which cost a deploy cycle:
   gRPC, which no flag reveals. The compactor uses 10903 to avoid it.
 - Thanos uses kingpin, so **boolean flags reject `=value`** and fail with
   `error: unexpected false`.
+
+Datasources and dashboards are provisioned from the role, not clicked in:
+
+| Dashboard | uid | Panels | Covers |
+|---|---|---|---|
+| vLLM and Qwen performance | `vllm-qwen` | 20 | tokens/s, TTFT, ITL, KV cache, preemption, prefix cache |
+| Fleet health | `fleet` | 11 | CPU, unified memory, disk, GPU util, temperature, power, 200GbE |
+| Observability stack health | `obs-self` | 10 | ingest rate, remote-write queue, compaction, query p95 |
+
+Two more traps here:
+
+- **Grafana cannot change the uid of an already-provisioned datasource.** It
+  fails with "data source not found" and refuses to start. The template carries
+  a `deleteDatasources` stanza that removes them by name first, which makes the
+  uids (`thanos`, `loki`) stable across rebuilds. The provisioned dashboards
+  reference those uids, so they must not drift.
+- **The datasource URL must be `127.0.0.1`, not the Compose service name.**
+  These containers run with `network_mode: host`, so Docker's embedded DNS does
+  not resolve `thanos-query`. Using the service name breaks every metric panel
+  and surfaces first as a Drilldown plugin error rather than an obvious
+  connection failure.
+
+`allowUiUpdates` is on, so browser edits stick until the next playbook run
+overwrites them. Export anything worth keeping into
+`roles/observability/files/dashboards/`.
+
+The Grafana admin password comes from `.secrets/grafana.yml`, loaded by
+`observability.yml` via `vars_files`. Grafana applies
+`GF_SECURITY_ADMIN_PASSWORD` only when initialising a fresh database — a
+password later changed in the UI persists and the environment variable is
+ignored — so that file must be kept in step with reality or a rebuild from an
+empty volume will come up with the `admin` default.
 
 ---
 
@@ -671,5 +721,92 @@ ssh -F .ssh/config obs-read \
 
 Expect node, otelcol, dcgm and vllm from both Sparks, plus the Thanos, Loki and
 Grafana components from both observability nodes.
+
+---
+## 15. End-to-end verification `[workstation]`
+
+Run after any rebuild. Each check fails loudly rather than degrading quietly,
+which matters because most of the faults in this build were silent.
+
+```bash
+# 1. VPN. Expect every peer Connected or Idle, none Disconnected.
+netbird status -d
+
+# 2. Scrape health. Expect 18.
+curl -s --get http://100.123.229.83:19192/api/v1/query \
+  --data-urlencode 'query=sum(up)'
+
+# 3. Per-target breakdown, when the count is short.
+curl -s --get http://100.123.229.83:19192/api/v1/query \
+  --data-urlencode 'query=up' \
+  | jq -r '.data.result[] | "\(.metric.node)\t\(.metric.job)\t\(.value[1])"' | sort
+
+# 4. Logs are arriving and are attributed to a unit, not unknown_service.
+curl -s -G http://100.123.158.113:3100/loki/api/v1/label/service_name/values | jq -r '.data[]'
+
+# 5. Both model servers answer.
+for h in 100.123.96.149 100.123.5.235; do
+  curl -s http://$h:8000/v1/models | jq -r '.data[].id'
+done
+
+# 6. Grafana is up and its dashboards are provisioned.
+curl -s http://100.123.229.83:3000/api/health | jq -r '.database'
+```
+
+Expected results, as measured on 2026-09-03:
+
+| Check | Expected |
+|---|---|
+| Peers connected | 2/3 from each Spark, obs-read Idle until queried |
+| `sum(up)` | 18 |
+| Loki `service_name` | `vllm.service`, `anythingllm.service`, `docker.service`, `otelcol-contrib.service`, `init.scope`, `unknown_service` |
+| `/v1/models` | `qwen3.8-27b` from both nodes |
+| Grafana health | `ok`, version 13.0.8 |
+
+`unknown_service` in that list is expected, not a fault: kernel messages carry
+no systemd unit, so the transform has nothing to set `service.name` from.
+
+A `sum(up)` below 18 with everything else healthy is usually a single exporter,
+not a network fault. Check the breakdown before touching the VPN.
+
+---
+
+## 16. vLLM access control `[sparks]`
+
+```bash
+cd ansible && ansible-playbook site.yml
+```
+
+Two independent controls, because neither is sufficient alone.
+
+**Per-client API keys.** `ms_api_keys` in `.secrets/vllm-keys.yml`, one entry
+per client, rendered into the unit. Revoke by deleting an entry and re-running.
+
+> All keys must go on a **single** `--api-key` flag. The argument is
+> `nargs='+'`, so repeating the flag keeps only the last value and every other
+> client gets 401 with nothing logged at startup to explain it.
+
+**Source-network allowlist.** `ms_allowed_cidrs`, applied by
+`vllm-firewall.service` into DOCKER-USER. This exists because `--api-key` only
+guards `/v1`, `/v2` and `/inference`: **`/invocations` offers the same inference
+and is unauthenticated**, so keys alone are bypassable in one request. Being
+network-level, the allowlist covers it.
+
+The rules must go in DOCKER-USER and be inserted, not appended: that chain ends
+in a `RETURN`, so an appended rule is never reached. Rules are tagged with an
+iptables comment so a re-run removes its predecessors rather than stacking.
+The unit is enabled because Docker rebuilds its chains on restart and discards
+them.
+
+Verify:
+
+```bash
+KEY=<a key from .secrets/vllm-keys.yml>
+curl -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $KEY" \
+  http://100.123.96.149:8000/v1/models      # 200
+curl -o /dev/null -w '%{http_code}\n' http://100.123.96.149:8000/v1/models   # 401
+curl -o /dev/null -m 8 -w '%{http_code}\n' \
+  http://spark-a01a.tommyslab:8000/v1/models  # 000, blocked from the lab LAN
+```
 
 ---

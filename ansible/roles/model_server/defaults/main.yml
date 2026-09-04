@@ -28,6 +28,34 @@ ms_trust_remote_code: true         # Qwen3.8 uses a custom architecture
 ms_dtype: auto                     # FP8 checkpoints are detected from config
 ms_extra_args: []                  # additional vLLM CLI flags
 
+# --- Access control ---------------------------------------------------------
+# One entry per client: [{name, key}]. vLLM 0.28 takes a list, so a key can be
+# revoked without disturbing the others. The flag is nargs='+', so every key
+# goes on ONE --api-key; repeating the flag silently keeps only the last value
+# and every other client gets 401. Real values live in
+# .secrets/vllm-keys.yml; empty means the endpoint is unauthenticated.
+#
+# These guard /v1, /v2 and /inference ONLY. /invocations exposes the same
+# inference capability and is NOT covered, so keys alone are not a perimeter:
+# https://docs.vllm.ai/en/latest/usage/security.html#api-key-authentication-limitations
+ms_api_keys: []
+
+# Source networks allowed to reach the published port. Enforced in DOCKER-USER,
+# which Docker evaluates before its own rules and never rewrites, so this holds
+# where a plain INPUT rule would be bypassed. Being network-level it also covers
+# /invocations, which the API keys do not.
+#
+# Default admits the VPN overlay, the Docker bridges (AnythingLLM reaches vLLM
+# through host.docker.internal), the interconnect and loopback. It deliberately
+# excludes both Ethernet networks: clients on the lab LAN must join the VPN.
+ms_restrict_network: true
+ms_allowed_cidrs:
+  - 127.0.0.0/8
+  - 172.16.0.0/12          # Docker bridge networks
+  - 100.64.0.0/10          # NetBird overlay
+  - 192.168.100.0/24       # interconnect
+  - 192.168.101.0/24       # interconnect
+
 # Separates chain-of-thought from the answer for reasoning models. Without it
 # the thinking text is returned inline as message content. Run
 #   docker run --rm --entrypoint bash IMAGE -c 'grep -n name= .../reasoning/__init__.py'

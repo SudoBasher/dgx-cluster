@@ -28,7 +28,12 @@ allm_llm_model: ""                 # must match the vLLM --served-model-name
 # decide how much history and RAG context to pack into a prompt, and prefill at
 # 262144 on this hardware takes long enough to look like a hang.
 allm_llm_token_limit: 32768
-allm_llm_api_key: "not-required"   # vLLM has no auth yet; see NEXT_STEPS.md
+# Picks the "anythingllm" entry out of ms_api_keys so the front end has its own
+# revocable credential rather than sharing a human's. Falls back to the
+# unauthenticated placeholder if no keys are configured.
+allm_llm_api_key: >-
+  {{ (ms_api_keys | default([]) | selectattr('name','equalto','anythingllm')
+      | map(attribute='key') | list | first) | default('not-required', true) }}
 
 # Leave the embedding engine and vector DB unset to use the built-in native
 # embedder and LanceDB, both of which run in-process and need no extra service.

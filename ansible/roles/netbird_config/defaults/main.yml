@@ -1,0 +1,52 @@
+---
+# Declarative NetBird access model: groups, setup keys, policies and routes.
+# Runs against the self-hosted API, so it needs no host beyond localhost.
+
+nbcfg_api: "https://vpn.isc-spectro-sbx.click/api"
+nbcfg_token: ""                 # from .secrets/netbird-token
+
+nbcfg_groups:
+  - admins
+  - teammates
+  - sparks
+  - aws-infra
+  - obs-read
+
+nbcfg_setup_keys:
+  - { name: admin-device,    groups: [admins] }
+  - { name: teammate-device, groups: [teammates] }
+  - { name: spark-node,      groups: [sparks] }
+  - { name: aws-obs-write,   groups: [aws-infra] }
+  # obs-read needs both: aws-infra for admin access, obs-read so the teammate
+  # Grafana policy can target it without exposing obs-write.
+  - { name: aws-obs-read,    groups: [aws-infra, obs-read] }
+
+nbcfg_setup_key_ttl: 2592000    # 30 days
+
+# Human access paths, then machine-to-machine. The latter are easy to forget
+# because nobody logs into them, and omitting them takes telemetry to zero the
+# moment the All->All default is disabled - silently, with no error anywhere.
+nbcfg_policies:
+  - { name: admins-to-sparks,     src: admins,    dst: sparks,    protocol: all, bidirectional: true }
+  - { name: admins-to-aws,        src: admins,    dst: aws-infra, protocol: all, bidirectional: true }
+  - { name: teammates-to-sparks,  src: teammates, dst: sparks,    protocol: all, bidirectional: true }
+  # Ports must be strings. Integers are rejected with a null body and HTTP 200,
+  # so the failure looks like success.
+  - { name: teammates-to-grafana, src: teammates, dst: obs-read,  protocol: tcp, bidirectional: false, ports: ["3000"] }
+  - { name: sparks-to-aws,        src: sparks,    dst: aws-infra, protocol: all, bidirectional: true }
+  - { name: aws-internal,         src: aws-infra, dst: aws-infra, protocol: all, bidirectional: true }
+
+# Both Sparks advertise the lab VLAN under one network_id; NetBird fails over
+# between them, so rebooting one does not remove lab access.
+# masquerade avoids needing a static 100.64.0.0/10 route on the UDM.
+nbcfg_routes:
+  - network_id: lab
+    network: 10.255.128.0/20
+    peers: [spark1, spark2]
+    distribution_groups: [admins, teammates]
+    masquerade: true
+    metric: 9999
+
+# Disables the built-in All->All policy so the above actually bind. Leave false
+# until every peer is enrolled.
+nbcfg_disable_default_policy: true

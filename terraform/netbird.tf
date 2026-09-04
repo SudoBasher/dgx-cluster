@@ -42,10 +42,10 @@ resource "aws_eip" "netbird" {
 
 # Private subnet egress. Points at the ENI rather than the instance id so the
 # route survives an instance replacement that keeps the interface.
-resource "aws_route" "private_nat" {
+resource "aws_route" "private_egress" {
   route_table_id         = aws_route_table.private.id
   destination_cidr_block = "0.0.0.0/0"
-  network_interface_id   = aws_instance.netbird.primary_network_interface_id
+  gateway_id             = aws_internet_gateway.main.id
 }
 
 data "aws_route53_zone" "main" {

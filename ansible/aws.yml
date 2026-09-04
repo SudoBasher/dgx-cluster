@@ -1,6 +1,6 @@
 ---
 - name: Deploy the NetBird control plane
-  hosts: aws
+  hosts: netbird-cp
   gather_facts: true
 
   roles:

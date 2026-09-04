@@ -1,4 +1,13 @@
 ---
+- name: Select the key this play uses to probe the API
+  ansible.builtin.set_fact:
+    _ms_probe_key: >-
+      {{ (ms_api_keys | default([]) | selectattr('name','equalto','claude')
+          | map(attribute='key') | list | first)
+         | default((ms_api_keys | default([]) | map(attribute='key') | list | first)
+                   | default('', true), true) }}
+  no_log: true
+
 - name: Derive served model name from repo id when not set
   ansible.builtin.set_fact:
     _ms_served_name: >-
@@ -214,6 +223,46 @@
         group: "{{ ansible_user }}"
         recurse: true
 
+    - name: Source-network allowlist
+      become: true
+      block:
+        - name: Install the allowlist script
+          ansible.builtin.template:
+            src: vllm-firewall.sh.j2
+            dest: /usr/local/sbin/vllm-firewall
+            owner: root
+            group: root
+            mode: "0750"
+          register: _ms_fw_script
+
+        - name: Install the allowlist unit
+          ansible.builtin.template:
+            src: vllm-firewall.service.j2
+            dest: /etc/systemd/system/vllm-firewall.service
+            owner: root
+            group: root
+            mode: "0644"
+          register: _ms_fw_unit
+          notify: reload systemd
+
+        - name: Apply unit changes now
+          ansible.builtin.meta: flush_handlers
+
+        # Docker rebuilds its chains on restart, so this is enabled to reapply
+        # at boot as well as being run here.
+        # Reapply only when the rules actually changed; the unit is oneshot
+        # with RemainAfterExit, so an unconditional restart would report
+        # changed on every run.
+        - name: Enable and apply the allowlist
+          ansible.builtin.systemd:
+            name: vllm-firewall
+            enabled: true
+            state: >-
+              {{ 'restarted'
+                 if (_ms_fw_script.changed or _ms_fw_unit.changed)
+                 else 'started' }}
+            daemon_reload: true
+
     - name: Install the systemd unit
       become: true
       ansible.builtin.template:
@@ -246,12 +295,17 @@
       delay: 10
       when: ms_wait_for_health
 
+    # /v1 is guarded once ms_api_keys is set, so this must authenticate. Uses
+    # the "claude" key: automation gets its own credential like every client.
     - name: Confirm the served model is listed
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ ms_port }}/v1/models"
         return_content: true
+        headers: >-
+          {{ {'Authorization': 'Bearer ' + _ms_probe_key} if _ms_probe_key | length > 0 else {} }}
       register: _ms_models
       when: ms_wait_for_health
+      no_log: true
 
     - name: Report
       ansible.builtin.debug:

@@ -60,9 +60,11 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# Private egress goes through the netbird-cp instance acting as a NAT router.
-# The default route is added in netbird.tf once that ENI exists, so this table
-# is created empty here.
+# Despite the name this subnet routes via the internet gateway, not the NAT
+# instance. The observability nodes carry EIPs so WireGuard hole punching can
+# work: behind the NAT instance it never could, because Linux MASQUERADE does
+# endpoint-dependent filtering and silently drops inbound hole-punch packets.
+# They remain closed to the internet; the security group admits only WireGuard.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
   tags   = { Name = "${local.name}-private" }

@@ -3,46 +3,52 @@
 Open work on the cluster, roughly in priority order. Current state is in
 `FINDINGS.md`; procedures are in `RUNBOOK.md` and `ansible/README.md`.
 
-## 0. Finish the cloud stack — mostly built
+## 0. Cloud stack — built
 
-Built and running as of 2026-09-02: VPC, NetBird VPN, Thanos, Loki, Grafana,
-and telemetry agents on all four hosts. Addresses in `ACCESS.md`. Four items
-remain.
+Complete as of 2026-09-03. VPC, NetBird VPN, Thanos, Loki, Grafana, telemetry
+agents on all four hosts, three dashboards, lab VLAN route, and the access
+policies with the All-to-All default disabled. Addresses in `ACCESS.md`.
 
-**Advertise the lab VLAN route.** `nbc_routes` is set in `host_vars` for both
-Sparks but the `netbird_client` role never calls the API to create the route,
-so `10.255.128.0/20` is not reachable over the VPN. The Sparks themselves are
-fine at their overlay addresses; this only affects lab hosts that cannot run a
-client. Needs a task posting to `/api/routes` with both Sparks as peers so the
-route survives one rebooting.
+Everything is Ansible or OpenTofu; there are no configuration shell scripts.
+`ansible/netbird-access.yml` holds the access model declaratively and converges
+to `changed=0`.
 
-**Disable the `All -> All` default policy.** The group policies are defined but
-not binding until it is off. Write `bin/netbird-lockdown` to do it, and verify
-teammate access is genuinely limited to Grafana afterwards rather than assuming.
+Two things learned the hard way, recorded so they are not repeated:
 
-**Grafana dashboards.** Datasources are provisioned and data is flowing, but no
-dashboards are built yet. Standard NVIDIA and node_exporter dashboards need
-their GPU-memory panels replaced, since GB10 reports nothing there.
+**Policies must cover machine-to-machine paths.** Disabling the All-to-All
+default with only human-access policies took telemetry to zero, silently. The
+collectors pushing to Thanos and thanos-query reaching thanos-receive both
+needed explicit policies. Check target counts after any policy change, not just
+your own access.
 
-**Decide on netbird-b.** Spark-to-AWS is Relayed, not Direct — NAT traversal
-fails through the UDM and will not be changed. Relay is therefore load-bearing
-and netbird-cp sits in the telemetry data path. This is the evidence the design
-said would decide it; adding the second node is now the reasonable call.
+**netbird-b was built and then destroyed.** It was justified by a `Relayed`
+reading between the Sparks and AWS, but registering it required the `relays:`
+block that caused an outage, and giving the observability nodes EIPs removed
+the relay dependency anyway. That fix is now confirmed by measurement: the
+Spark-to-obs-write link reports `Connection type: P2P` with `srflx/srflx`
+candidates at 32 ms, against 82 ms relayed. Do not rebuild netbird-b without
+new evidence.
 
-## 1. Add `ms_api_key` — deferred, do this later
+## 1. vLLM authentication — done
 
-The vLLM endpoints are currently **unauthenticated and bound to 0.0.0.0**.
-Anyone on the LAN can send requests to either GPU. This was left out of the
-initial deployment deliberately to keep the first run simple, and needs adding.
+Complete as of 2026-09-04. Both nodes require a key on `/v1`, and the published
+port is restricted to the VPN overlay.
 
-The work: a `ms_api_key` variable in `roles/model_server/defaults/main.yml`,
-passed through to `--api-key` in the systemd unit template, with the value kept
-out of git via ansible-vault or a file outside the repo. Clients then send
-`Authorization: Bearer <key>`, which AnythingLLM's Generic OpenAI provider
-already supports in its API key field.
+Four per-client keys in `.secrets/vllm-keys.yml`, loaded by `site.yml`:
+`admin-tommy`, `claude`, `anythingllm`, `teammate`. Any one can be revoked by
+deleting its entry and re-running the playbook.
 
-Worth pairing with a decision on whether the endpoints should be reachable from
-the whole LAN at all, or bound to a specific interface.
+Two things learned:
+
+**All keys go on a single `--api-key` flag.** It is `nargs='+'`, so repeating
+the flag keeps only the last value and every other client gets 401 — with no
+warning at startup.
+
+**Keys are not a perimeter.** `--api-key` guards `/v1`, `/v2` and `/inference`
+only; `/invocations` offers the same inference unauthenticated. What actually
+closes that is `ms_allowed_cidrs`, enforced in DOCKER-USER. Clients on the lab
+LAN must now join the VPN; widen that list if a lab host genuinely needs direct
+access.
 
 ## 2. Disable thinking by default
 
@@ -55,14 +61,7 @@ Options: a per-request `chat_template_kwargs: {"enable_thinking": false}`,
 which requires client support, or a server-side default in the role so short
 queries return promptly and reasoning is opted into rather than out of.
 
-## 3. Commit the repository
-
-Nothing is committed yet. The working tree holds the runbook, findings,
-monitoring guide, benchmarks and the full Ansible deployment. `.gitignore`
-excludes the private key; confirm with `git status --short --untracked-files=all`
-before the first commit.
-
-## 4. Benchmark throughput properly
+## 3. Benchmark throughput properly
 
 Measured samples ranged 4.3-8.4 tok/s, which is too wide to plan around. The
 spread is some mix of warmth, generation length and sampling noise, and has not
@@ -71,7 +70,7 @@ both nodes, would give a number worth quoting. Concurrency behaviour is also
 untested: vLLM batches continuously, so aggregate throughput under several
 simultaneous requests should be well above the single-stream figure.
 
-## 5. Repoint spark2 at a second model
+## 4. Repoint spark2 at a second model
 
 The stated plan. `ansible/host_vars/spark2.yml` is the only file that needs to
 change; see `ansible/README.md`. Candidates evaluated against this hardware are
@@ -81,7 +80,7 @@ Hugging Face download automatically once spark1 no longer has the model.
 Once the nodes serve different models, treat them as separate endpoints rather
 than replicas.
 
-## 6. Connect AnythingLLM
+## 5. Connect AnythingLLM
 
 Generic OpenAI provider, base URL `http://spark-a01a.tommyslab:8000/v1`, model
 `qwen3.8-27b`. Set the token context window well below the 262144 the server

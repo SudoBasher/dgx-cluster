@@ -55,4 +55,6 @@ services:
     volumes:
       - {{ obs_dir }}/grafana-data:/var/lib/grafana
       - {{ obs_dir }}/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - {{ obs_dir }}/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - {{ obs_dir }}/dashboards:/etc/grafana/provisioning/dashboards/dgx:ro
     depends_on: [thanos-query]

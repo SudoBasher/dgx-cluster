@@ -1,0 +1,16 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Restrict source networks allowed to reach vLLM
+# Docker rebuilds its chains when it starts, which discards these rules, so
+# they must be reapplied afterwards.
+After=docker.service
+Requires=docker.service
+Before={{ ms_service_name }}.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vllm-firewall
+
+[Install]
+WantedBy=multi-user.target

@@ -2,9 +2,10 @@
 - name: Observability stack
   hosts: observability
   gather_facts: true
-  # Setup keys are credentials; kept out of git.
+  # Setup keys and the Grafana admin password are credentials; kept out of git.
   vars_files:
     - ../.secrets/netbird-keys.yml
+    - ../.secrets/grafana.yml
   roles:
     - role: netbird_client
     - role: observability

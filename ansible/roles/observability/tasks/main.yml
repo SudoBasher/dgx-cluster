@@ -61,6 +61,36 @@
   when: obs_role == 'read'
   notify: restart observability
 
+- name: Provision Grafana dashboards
+  become: true
+  when: obs_role == 'read'
+  block:
+    - name: Dashboard directory
+      ansible.builtin.file:
+        path: "{{ obs_dir }}/dashboards"
+        state: directory
+        mode: "0755"
+
+    - name: Dashboard provider config
+      ansible.builtin.template:
+        src: dashboards.yml.j2
+        dest: "{{ obs_dir }}/dashboards.yml"
+        mode: "0644"
+      notify: restart observability
+
+    # allowUiUpdates is on, so edits made in the browser stick until the next
+    # playbook run overwrites them. Export and commit anything worth keeping.
+    - name: Dashboard definitions
+      ansible.builtin.copy:
+        src: "dashboards/{{ item }}"
+        dest: "{{ obs_dir }}/dashboards/{{ item }}"
+        mode: "0644"
+      loop:
+        - vllm-qwen.json
+        - fleet.json
+        - obs-self.json
+      notify: restart observability
+
 - name: Write the compose file
   become: true
   ansible.builtin.template:

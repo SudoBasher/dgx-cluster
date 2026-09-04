@@ -145,3 +145,16 @@ resource "aws_instance" "obs_read" {
 
   tags = { Name = "${local.name}-obs-read" }
 }
+
+# Stable addresses so peers do not have to rediscover them after a stop/start.
+resource "aws_eip" "obs_write" {
+  instance = aws_instance.obs_write.id
+  domain   = "vpc"
+  tags     = { Name = "${local.name}-obs-write" }
+}
+
+resource "aws_eip" "obs_read" {
+  instance = aws_instance.obs_read.id
+  domain   = "vpc"
+  tags     = { Name = "${local.name}-obs-read" }
+}

@@ -118,3 +118,15 @@ resource "aws_vpc_security_group_egress_rule" "obs_all" {
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
+
+# The observability nodes now sit in a public subnet so WireGuard hole punching
+# can work. This is the only inbound rule they get: everything else, including
+# SSH and Grafana, remains reachable only over the VPN overlay.
+resource "aws_vpc_security_group_ingress_rule" "obs_wireguard" {
+  security_group_id = aws_security_group.observability.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "udp"
+  from_port         = 51820
+  to_port           = 51820
+  description       = "WireGuard; required for P2P instead of relay"
+}

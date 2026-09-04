@@ -42,7 +42,8 @@ ExecStart=/usr/bin/docker run \
     --max-model-len {{ ms_max_model_len }} \
     --gpu-memory-utilization {{ ms_gpu_memory_utilization }} \
     --tensor-parallel-size {{ ms_tensor_parallel_size }} \
-    --dtype {{ ms_dtype }}{% if ms_trust_remote_code %} \
+    --dtype {{ ms_dtype }}{% if ms_api_keys | length > 0 %} \
+    --api-key {{ ms_api_keys | map(attribute='key') | join(' ') }}{% endif %}{% if ms_trust_remote_code %} \
     --trust-remote-code{% endif %}{% if ms_reasoning_parser | length > 0 %} \
     --reasoning-parser {{ ms_reasoning_parser }}{% endif %}{% if ms_enable_auto_tool_choice %} \
     --enable-auto-tool-choice{% endif %}{% if ms_tool_call_parser | length > 0 %} \

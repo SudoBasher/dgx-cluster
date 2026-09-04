@@ -31,3 +31,5 @@ output "obs_private_ips" {
     read  = aws_instance.obs_read.private_ip
   }
 }
+
+

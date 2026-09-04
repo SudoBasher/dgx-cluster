@@ -1,0 +1,43 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Restricts who may reach the vLLM published port.
+#
+# The rules go in DOCKER-USER because Docker evaluates that chain before its
+# own and never rewrites it. An INPUT rule would not work: traffic to a
+# published port is DNATed and forwarded, so it never traverses INPUT.
+#
+# After DNAT the destination is the container port (8000), not {{ ms_port }}.
+set -euo pipefail
+
+TAG="vllm-acl"
+CPORT=8000
+
+# Remove rules from a previous run so this is idempotent. On a first run grep
+# matches nothing and exits 1, which pipefail would turn into a script failure,
+# hence the guard.
+existing="$(iptables-save -t filter 2>/dev/null | grep -- "--comment \"${TAG}\"" || true)"
+if [ -n "${existing}" ]; then
+  printf '%s\n' "${existing}" | sed 's/^-A /-D /' | while read -r rule; do
+    # shellcheck disable=SC2086
+    iptables -t filter $rule 2>/dev/null || true
+  done
+fi
+
+{% if ms_restrict_network and ms_api_keys | length >= 0 %}
+# Inserted at position 1 in reverse order, so the final order is:
+# established, allowed CIDRs, drop. Appending would land after DOCKER-USER's
+# own trailing RETURN and never be reached.
+iptables -I DOCKER-USER 1 -p tcp --dport "${CPORT}" \
+    -m comment --comment "${TAG}" -j DROP
+
+{% for cidr in ms_allowed_cidrs %}
+iptables -I DOCKER-USER 1 -p tcp --dport "${CPORT}" -s {{ cidr }} \
+    -m comment --comment "${TAG}" -j RETURN
+{% endfor %}
+
+iptables -I DOCKER-USER 1 -p tcp --dport "${CPORT}" \
+    -m conntrack --ctstate RELATED,ESTABLISHED \
+    -m comment --comment "${TAG}" -j RETURN
+{% endif %}
+
+exit 0

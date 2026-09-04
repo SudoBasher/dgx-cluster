@@ -1,7 +1,19 @@
 # {{ ansible_managed }}
 apiVersion: 1
+
+# Grafana cannot change the uid of an already-provisioned datasource; it fails
+# with "data source not found" and refuses to start. Deleting by name first
+# makes the uid explicit and stable across rebuilds, which is what the
+# provisioned dashboards reference. A no-op on a fresh install.
+deleteDatasources:
+  - name: Thanos
+    orgId: 1
+  - name: Loki
+    orgId: 1
+
 datasources:
   - name: Thanos
+    uid: thanos
     type: prometheus
     access: proxy
     url: http://127.0.0.1:19192
@@ -10,6 +22,7 @@ datasources:
       timeInterval: 1s
       httpMethod: POST
   - name: Loki
+    uid: loki
     type: loki
     access: proxy
     url: http://{{ obs_write_ip }}:3100

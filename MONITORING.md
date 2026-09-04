@@ -15,7 +15,22 @@ All addresses are NetBird overlay addresses and require the VPN. See
 
 <http://100.123.229.83:3000>
 
-Metrics come from Thanos, logs from Loki, both provisioned as datasources.
+Metrics come from Thanos, logs from Loki, both provisioned as datasources with
+fixed uids (`thanos`, `loki`).
+
+Three dashboards ship with the deployment. They are provisioned from
+`ansible/roles/observability/files/dashboards/`, so a playbook run restores
+them and also overwrites any browser edits.
+
+| Dashboard | What it answers |
+|---|---|
+| **vLLM and Qwen performance** | Is inference fast, and if not, why. Tokens/s, time to first token, inter-token latency, KV cache pressure, preemptions, prefix cache hit rate, plus GPU temperature and power on the same time axis |
+| **Fleet health** | Are the nodes healthy. CPU, unified memory, root filesystem, GPU utilisation and thermals, 200GbE interconnect throughput |
+| **Observability stack health** | Is the telemetry pipeline itself healthy. Samples accepted/s, remote-write queue depth, dropped telemetry, compactor iterations and memory, query p95 |
+
+Start at **Observability stack health** when a dashboard looks wrong. A flat
+line is far more often a dropped scrape or a stalled remote-write queue than
+an actual change on the node.
 
 **Logs.** Explore, pick Loki, then filter by systemd unit:
 
@@ -26,6 +41,27 @@ Metrics come from Thanos, logs from Loki, both provisioned as datasources.
 ```
 
 Kernel messages carry no unit and land under `unknown_service`.
+
+Streams carry three labels: `service_name`, `node` and `host_name`. Only
+`service_name` existed until 2026-09-04 — Loki's OTLP endpoint promotes a fixed
+default set of resource attributes and `node` was not among them, so
+`{node="spark1"}` silently matched nothing. Logs written before that date still
+have no `node` label.
+
+**Who is calling the model servers.** vLLM logs every request with its source
+address, and NetBird overlay addresses are stable per peer, so an address
+identifies a machine:
+
+```logql
+sum by (ip) (count_over_time(
+  {service_name="vllm.service"} |= "HTTP/1.1"
+  | regexp `(?P<ip>[0-9.]+):(?P<cport>[0-9]+) - "(?P<method>[A-Z]+) (?P<path>[^ ]+) HTTP/[0-9.]+" (?P<status>[0-9]+)`
+  | path =~ "/v1/.*|/invocations" [1h]))
+```
+
+Filter to `| status = "401"` to see rejected callers. The **Clients** row of the
+vLLM dashboard runs exactly this. Exclude `/metrics` or the collector's own
+scrapes dominate the count by three orders of magnitude.
 
 **Metrics.** Explore, pick Thanos. Useful starting points:
 
@@ -379,3 +415,16 @@ GPU memory readings are meaningless on GB10; use `free -h`.
 
 A stale apt index looks like a missing package. See `RUNBOOK.md` section 8
 before concluding a package does not exist.
+
+**Empty vLLM latency panels usually mean no traffic, not a broken dashboard.**
+`histogram_quantile` over a rate window containing zero requests returns `NaN`,
+which Grafana renders as "No data". The cluster serves a handful of requests a
+day, so a 5-minute window is empty almost all the time. The dashboard has a
+**Rate window** control at the top for this; widen it to 1h or 24h. The panels
+also say "No requests in this window" rather than a bare "No data".
+
+**Percentiles from a handful of samples are not trustworthy.** With six
+requests in the window, p95 and p99 land in whichever coarse histogram bucket
+holds the tail, and Grafana interpolates inside it — a p99 of 1,881 s appeared
+from requests that all completed in under 30 s. p50 is meaningful at low sample
+counts; the upper percentiles are not until the request rate is much higher.

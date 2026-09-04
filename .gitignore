@@ -12,3 +12,6 @@
 .terraform/
 *.tfstate
 *.tfstate.*
+
+# Ansible run logs, streamed so a long playbook is visible while it runs
+logs/

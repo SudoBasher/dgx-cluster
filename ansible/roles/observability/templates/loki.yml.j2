@@ -39,6 +39,18 @@ limits_config:
   ingestion_burst_size_mb: 64
   max_query_lookback: {{ obs_retention_5m }}
 
+  # Loki's OTLP endpoint promotes only a fixed default set of resource
+  # attributes to stream labels, and "node" is not among them. Without this the
+  # only label on a log stream is service_name, so logs cannot be filtered by
+  # host and {node="spark1"} silently matches nothing.
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - node
+            - host.name
+
 compactor:
   working_directory: /loki/compactor
   retention_enabled: true
