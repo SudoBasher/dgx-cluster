@@ -98,7 +98,6 @@ dashboards.
 | `10.200.10.0/24` | Observability subnet |
 | `100.123.0.0/16` | NetBird overlay, allocated from `100.64.0.0/10` |
 | `10.255.128.0/20` | Lab VLAN, tommyslab, UniFi Dream Machine |
-| `10.255.192.0/20` | Separate lab segment, not routable from the Sparks |
 | `192.168.100.0/24`, `192.168.101.0/24` | Spark interconnect, private cable |
 | `172.17.0.0/16` | Docker on the Sparks |
 

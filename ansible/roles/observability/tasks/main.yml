@@ -115,3 +115,80 @@
   until: _obs_health.status in [200, 302]
   retries: 30
   delay: 5
+
+# Declarative Grafana accounts beyond the bootstrap "admin", via Grafana's own
+# HTTP API. Only meaningful on obs-read, where Grafana actually runs.
+- name: Grafana accounts
+  when: obs_role == 'read' and obs_grafana_users | length > 0
+  block:
+    - name: Look up existing Grafana accounts
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/users/lookup?loginOrEmail={{ item.login }}"
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        status_code: [200, 404]
+      loop: "{{ obs_grafana_users }}"
+      loop_control: { label: "{{ item.login }}" }
+      register: _obs_gf_lookup
+      no_log: true
+
+    # The password only ever appears in this one request body.
+    - name: Create missing Grafana accounts
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/admin/users"
+        method: POST
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          login: "{{ item.item.login }}"
+          password: "{{ item.item.password }}"
+        status_code: [200]
+      loop: "{{ _obs_gf_lookup.results }}"
+      loop_control: { label: "{{ item.item.login }}" }
+      when: item.status == 404
+      no_log: true
+
+    - name: Re-read accounts so ids are available for role/admin updates
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/users/lookup?loginOrEmail={{ item.login }}"
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+      loop: "{{ obs_grafana_users }}"
+      loop_control: { label: "{{ item.login }}" }
+      register: _obs_gf_ids
+      no_log: true
+
+    # Org role and the server-wide admin flag are separate switches in
+    # Grafana's API; a full admin account needs both set.
+    - name: Set organisation role
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/org/users/{{ item.json.id }}"
+        method: PATCH
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          role: "{{ 'Admin' if item.item.is_admin | default(false) else 'Editor' }}"
+        status_code: [200]
+      loop: "{{ _obs_gf_ids.results }}"
+      loop_control: { label: "{{ item.item.login }}" }
+
+    - name: Set server-admin flag
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/admin/users/{{ item.json.id }}/permissions"
+        method: PUT
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          isGrafanaAdmin: "{{ item.item.is_admin | default(false) }}"
+        status_code: [200]
+      loop: "{{ _obs_gf_ids.results }}"
+      loop_control: { label: "{{ item.item.login }}" }

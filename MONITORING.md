@@ -25,7 +25,7 @@ them and also overwrites any browser edits.
 | Dashboard | What it answers |
 |---|---|
 | **vLLM and Qwen performance** | Is inference fast, and if not, why. Tokens/s, time to first token, inter-token latency, KV cache pressure, preemptions, prefix cache hit rate, plus GPU temperature and power on the same time axis |
-| **Fleet health** | Are the nodes healthy. CPU, unified memory, root filesystem, GPU utilisation and thermals, 200GbE interconnect throughput |
+| **Fleet health** | Are the nodes healthy. CPU, unified memory, root filesystem, GPU utilisation and thermals, 200GbE interconnect throughput, and SSH authentication events (a Security row covering both Sparks and the NetBird control plane) |
 | **Observability stack health** | Is the telemetry pipeline itself healthy. Samples accepted/s, remote-write queue depth, dropped telemetry, compactor iterations and memory, query p95 |
 
 Start at **Observability stack health** when a dashboard looks wrong. A flat
@@ -38,7 +38,23 @@ an actual change on the node.
 {service_name="vllm.service"}
 {service_name="anythingllm.service"} |= "error"
 {node="spark1"} | json | priority <= 3
+{service_name="ssh.service"} |= "Accepted"          # successful logins, any host
+{service_name="ssh.service"} |= "Failed"            # rejected attempts, any host
+{service_name="netbird-server"}                     # NetBird's own auth/peer activity
 ```
+
+Two different things called "auth" here, kept as separate services rather than
+merged:
+
+- `ssh.service` is host login — who got a shell on a Spark or on netbird-cp.
+- `netbird-server` is the VPN's own management service — peer connections,
+  relay activity, and the JWT/Dex authentication behind the dashboard and API.
+
+Both live on the Fleet health dashboard's Security row as three panels, not
+two: SSH on the Sparks, SSH on netbird-cp, and VPN auth from netbird-server
+itself. `netbird-dashboard` and `netbird-traefik` are also visible as their
+own services in Explore if the underlying HTTP traffic is ever worth
+inspecting, though nothing is provisioned against them yet.
 
 Kernel messages carry no unit and land under `unknown_service`.
 

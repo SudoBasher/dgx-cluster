@@ -438,7 +438,7 @@
           },
           "expr": "rate(node_ethtool_received_bytes_phy{device=\"enp1s0f0np0\"}[1m])*8",
           "legendFormat": "rx {{node}}",
-          "refId": "A",
+          "refId": "B",
           "editorMode": "code",
           "range": true
         }
@@ -507,7 +507,7 @@
           },
           "expr": "rate(node_network_receive_bytes_total{device=\"enP7s7\"}[1m])*8",
           "legendFormat": "rx {{node}}",
-          "refId": "A",
+          "refId": "B",
           "editorMode": "code",
           "range": true
         }
@@ -541,6 +541,151 @@
         },
         "overrides": []
       }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 12,
+      "panels": [],
+      "title": "Security",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "sshd authentication events from both Sparks: accepted/failed logins, session open/close.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No auth events in this window"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      },
+      "id": 13,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{service_name=\"ssh.service\"} | node =~ \"spark1|spark2\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "SSH auth \u2014 Sparks",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "sshd authentication events on the VPN control-plane node. This is host login to netbird-cp, not NetBird's own dashboard/API auth.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No auth events in this window"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 26
+      },
+      "id": 14,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{service_name=\"ssh.service\"} | node =~ \"netbird-cp\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "SSH auth \u2014 NetBird control plane (host login)",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "NetBird management server's own log stream: peer connections, relay activity, and authentication/authorization events for the VPN itself - distinct from sshd host login to netbird-cp, shown separately.",
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "No events in this window"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 26
+      },
+      "id": 15,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{service_name=\"netbird-server\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "VPN auth \u2014 NetBird server",
+      "type": "logs"
     }
   ]
 }

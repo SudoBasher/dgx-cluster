@@ -12,11 +12,15 @@ nbcfg_groups:
   - aws-infra
   - obs-read
 
+# usage_limit is optional per entry, default 0 (reusable, unlimited). Set to 1
+# for a one-off, individually attributable and revocable key rather than
+# sharing the standing per-role key above.
 nbcfg_setup_keys:
   - { name: admin-device,    groups: [admins] }
   - { name: teammate-device, groups: [teammates] }
   - { name: spark-node,      groups: [sparks] }
   - { name: aws-obs-write,   groups: [aws-infra] }
+  - { name: alex.scammon,    groups: [teammates], usage_limit: 1 }
   # obs-read needs both: aws-infra for admin access, obs-read so the teammate
   # Grafana policy can target it without exposing obs-write.
   - { name: aws-obs-read,    groups: [aws-infra, obs-read] }

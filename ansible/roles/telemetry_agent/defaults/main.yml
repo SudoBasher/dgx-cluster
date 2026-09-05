@@ -14,6 +14,10 @@ tel_dir: /opt/telemetry
 # Set true on GPU hosts.
 tel_enable_dcgm: false
 
+# Set false for a logs-only host (e.g. netbird-cp): skips installing
+# node_exporter entirely rather than installing it with nothing scraping it.
+tel_enable_node_exporter: true
+
 # Scrape jobs, per host group. Interval is per job because 1s on
 # node_exporter is worth it and 1s on vLLM perturbs inference.
 tel_scrape_jobs: []

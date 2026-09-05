@@ -9,6 +9,7 @@ tel_journal_units:
   - anythingllm
   - docker
   - netbird
+  - ssh
 
 # 1s everywhere except vLLM. Its /metrics handler runs inside the serving
 # process, and 60 scrapes a minute against a node already at 105 of 121 GiB

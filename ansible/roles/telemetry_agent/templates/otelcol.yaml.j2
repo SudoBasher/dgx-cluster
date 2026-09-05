@@ -63,8 +63,18 @@ processors:
     log_statements:
       - context: log
         statements:
+          # A container logging via Docker's journald driver carries
+          # CONTAINER_NAME (with a leading slash) but _SYSTEMD_UNIT is still
+          # docker.service, the daemon that wrote the entry on its behalf.
+          # Checked first so netbird-server/-dashboard/-traefik surface as
+          # their own service.name instead of collapsing into "docker.service".
+          - set(resource.attributes["service.name"], body["CONTAINER_NAME"])
+              where body["CONTAINER_NAME"] != nil
+          - replace_pattern(resource.attributes["service.name"], "^/", "")
+              where body["CONTAINER_NAME"] != nil
           - set(resource.attributes["service.name"], body["_SYSTEMD_UNIT"])
-              where body["_SYSTEMD_UNIT"] != nil
+              where resource.attributes["service.name"] == nil
+                and body["_SYSTEMD_UNIT"] != nil
           - set(resource.attributes["service.name"], body["SYSLOG_IDENTIFIER"])
               where resource.attributes["service.name"] == nil
                 and body["SYSLOG_IDENTIFIER"] != nil

@@ -8,6 +8,7 @@
 
 - name: Host metrics exporter
   become: true
+  when: tel_enable_node_exporter | default(true)
   block:
     - name: Install node_exporter
       ansible.builtin.apt:

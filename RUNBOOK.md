@@ -810,3 +810,212 @@ curl -o /dev/null -m 8 -w '%{http_code}\n' \
 ```
 
 ---
+
+## 17. Administrative accounts `[sparks, observability]`
+
+```bash
+cd ansible && ansible-playbook admin-users.yml
+```
+
+Key-only, NOPASSWD sudo accounts, distinct from the per-service accounts
+(`claude`, `ubuntu`) that own the deployed workloads. Defined in
+`admin-users.yml`, applied by the `admin_users` role: create the account,
+install its public key(s), then write a dedicated `/etc/sudoers.d/<file>`
+granting `ALL=(ALL) NOPASSWD:ALL`, validated with `visudo -cf` before it
+replaces anything on disk.
+
+NOPASSWD, not just `sudo`-group membership: these accounts have no password
+set, so an interactive sudo prompt would be a lockout rather than a
+safeguard.
+
+The role is additive per play — a play only touches the users listed in its
+own `admin_users` var, never removing an account outside that list. Two plays
+in `admin-users.yml`:
+
+| Account | Scope | sudoers file |
+|---|---|---|
+| `tommy.aldo.sonin` | both Sparks, both observability nodes | `/etc/sudoers.d/sudobasher` |
+| `alex.scammon` | spark2 only | `/etc/sudoers.d/vanguard` |
+
+netbird-cp is not in scope for either; add a third play if a login is needed
+there too.
+
+Verify:
+
+```bash
+ansible sparks:observability -b --become-user tommy.aldo.sonin -a 'whoami'
+ansible spark2 -b --become-user alex.scammon -a 'whoami'
+```
+
+### VPN access for a new person
+
+A dedicated, single-use NetBird setup key, not the shared `teammate-device`
+key, so the grant is individually attributable and revocable:
+
+```yaml
+# roles/netbird_config/defaults/main.yml
+- { name: alex.scammon, groups: [teammates], usage_limit: 1 }
+```
+
+`usage_limit: 1` selects `type: one-off` in the role — the key stops working
+after first use, so handing it to one person doesn't hand it to whoever else
+sees it.
+
+**Trap:** the `uri` module's `body:` truncates when a YAML dict mixes a value
+built from a Jinja conditional with a value built from a filter chain (here,
+`type` from an `if/else` and `usage_limit` from `default()`) — the request
+lands as a 53-byte fragment of the intended ~170 bytes and the API returns
+`400 couldn't parse JSON request`, with no indication that the body itself was
+the problem. The fix is to render the whole body as one string with `to_json`
+rather than letting the module template a dict of independently-templated
+values:
+
+```yaml
+body: >-
+  {{ { 'name': item.name, 'type': (...), 'usage_limit': (...), ... } | to_json }}
+```
+
+The four pre-existing keys never hit this because none of their fields used a
+filter or a conditional — literal `type: reusable` and `usage_limit: 0`
+templated fine as plain dict values.
+
+---
+
+## 18. Bringing netbird-cp into telemetry `[netbird-cp]`
+
+```bash
+cd ansible && ansible-playbook telemetry.yml --limit netbird-cp
+```
+
+netbird-cp was outside the telemetry fleet until now — it runs no client, so
+it has no overlay address, unlike every other host this project ships logs or
+metrics from. `group_vars/aws.yml` routes it to obs-write's **VPC-private IP**
+(`10.200.10.116`) instead; both instances sit in the same VPC and the
+observability security group already admits all in-VPC traffic
+(`obs_from_vpc` in `terraform/security.tf`), so this needed no firewall change.
+
+Logs only at first: `tel_enable_node_exporter: false` skipped installing
+node_exporter altogether, rather than running it with nothing scraping it.
+Later reversed - `tel_enable_node_exporter: true` plus a `node` scrape job -
+once host CPU/memory/disk on netbird-cp was wanted on the Fleet health
+dashboard too. Its panels carry no node filter, so nothing needed changing
+there; the fix was entirely in `group_vars/aws.yml`.
+
+One thing to expect and not read as broken: the CPU panel shows a spike
+(spuriously as high as 80%) for the first ~30-60s after node_exporter starts
+or restarts. `rate()` is measuring a partial, not-yet-full window at that
+point; it settles as more samples accumulate. `top` on the host is the
+ground truth if a reading looks wrong right after a redeploy.
+
+Two things that broke on the first attempt:
+
+**An empty `tel_scrape_jobs` is not "zero metrics."** The collector's pipeline
+unconditionally references the `prometheus` receiver, and a receiver with no
+`scrape_configs` fails its own validation — `no Prometheus scrape_configs or
+target_allocator set` — which crash-loops the whole collector, logs included,
+not just metrics. The fix: give netbird-cp the same self-scrape job every
+other host already carries (`otelcol` → `127.0.0.1:8888`), the minimum that
+keeps the receiver valid.
+
+**thanos-receive's remote-write listener was bound to the overlay IP only**
+(`--remote-write.address={{ obs_write_ip }}:19291`), so even with the VPC
+route and security group in place, nothing was listening on the VPC-private
+address netbird-cp actually connects to — `context deadline exceeded`,
+repeating every scrape interval. The security group, not that bind, is the
+real boundary: anything in the VPC already reaches every port on obs-write.
+Widened to `0.0.0.0:19291` to match how `--grpc-address` and `--http-address`
+were already bound on the same line above it.
+
+Verify:
+
+```bash
+ansible netbird-cp -b -a 'systemctl is-active otelcol-contrib'
+curl -s --get http://100.123.229.83:19192/api/v1/query \
+  --data-urlencode 'query=up{node="netbird-cp"}'
+```
+
+### SSH auth logs, fleet-wide
+
+Both Sparks now ship `ssh.service` alongside the units they already carried
+(`group_vars/sparks.yml`). Combined with netbird-cp above, all three
+non-observability hosts now surface sshd authentication events in Loki, with
+two Logs panels on the **Fleet health** dashboard's new Security row:
+
+| Panel | Query |
+|---|---|
+| SSH auth — Sparks | `{service_name="ssh.service"} \| node =~ "spark1\|spark2"` |
+| SSH auth — NetBird control plane | `{service_name="ssh.service"} \| node =~ "netbird-cp"` |
+
+The second one is host login to netbird-cp, not NetBird's own dashboard or
+management-API authentication, which is a separate signal covered next.
+
+### VPN auth, distinct from host login
+
+NetBird's own containers (`netbird-server`, `netbird-dashboard`,
+`netbird-traefik`) are managed by `docker compose`, generated by NetBird's own
+installer script, and logged to per-container `json-file` on disk by default —
+invisible to a journald-based pipeline no matter what unit list it carries.
+
+Getting these into Loki as their own service, not merged into `docker.service`
+with every other daemon message, took two changes, both in `roles/netbird_server`:
+
+**A Compose override file, not a daemon default.** `/etc/docker/daemon.json`
+setting `log-driver: journald` looked sufficient but was not: the vendor
+compose file pins `driver: json-file` explicitly per service, and an explicit
+per-service value always wins over the daemon default. Compose auto-merges a
+`docker-compose.override.yml` placed alongside the vendor file, which is how
+this changes without editing a file the installer script owns and could
+regenerate. Containers must also be recreated, not just restarted — the log
+driver is fixed at container-create time.
+
+**The transform must check `CONTAINER_NAME` before `_SYSTEMD_UNIT`.** Even
+with the journald driver, `_SYSTEMD_UNIT` on every entry is still
+`docker.service` — the daemon, not the container, is journald's attribution
+point. `CONTAINER_NAME` (present only on docker-journald-driver entries, with
+a leading slash) is what actually identifies which container wrote it, so it
+must be checked first, before the existing `_SYSTEMD_UNIT` fallback collapses
+everything into `docker.service`. `netbird-cp`'s `docker` unit stays in
+`tel_journal_units` for this reason — it is the daemon's attribution, not a
+per-container one, that makes these entries visible to the receiver at all.
+
+Verify:
+
+```bash
+ansible netbird-cp -b -m shell -a   'docker inspect --format "{{ "{{" }}.HostConfig.LogConfig.Type{{ "}}" }}" netbird-server'
+curl -s --get http://100.123.158.113:3100/loki/api/v1/label/service_name/values   | jq -r '.data[]'
+```
+
+Expect `journald`, and `netbird-server` / `netbird-dashboard` / `netbird-traefik`
+each as their own entry in the label list — the same way `vllm.service` and
+`ssh.service` already are.
+
+---
+
+## 19. Grafana accounts `[obs-read]`
+
+```bash
+cd ansible && ansible-playbook observability.yml --limit obs-read
+```
+
+Declarative, via Grafana's own HTTP API — `obs_grafana_users` in
+`.secrets/grafana.yml`, one entry per named account: `login`, `name`,
+`password`, `is_admin`. Applied after the health-check wait, since it needs
+the live API, not just the rendered config.
+
+`is_admin: true` sets both switches Grafana treats separately: the
+organisation role (`Admin`, via `PATCH /api/org/users/:id`) and the
+server-wide flag (`isGrafanaAdmin`, via `PUT /api/admin/users/:id/permissions`).
+A dashboard-only account would need neither.
+
+The `uri` module doesn't compute a changed flag for a POST on its own, so
+every task in this block reports `ok` even on first creation — that's normal,
+not a sign nothing happened. Verify with the account's own credentials, not
+the task output:
+
+```bash
+curl -s -u '<login>:<password>' http://100.123.229.83:3000/api/user
+```
+
+200 with that user's own object back is the only real confirmation.
+
+---

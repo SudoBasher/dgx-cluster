@@ -26,3 +26,8 @@ obs_retention_5m: 365d
 obs_retention_1h: 1095d
 
 obs_grafana_admin_password: admin   # change on first login
+
+# Named accounts beyond the bootstrap "admin". Each item:
+#   login, name, password, is_admin (bool). Real values live in
+# .secrets/grafana.yml, never here.
+obs_grafana_users: []

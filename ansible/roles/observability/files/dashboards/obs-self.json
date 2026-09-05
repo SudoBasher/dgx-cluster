@@ -179,7 +179,7 @@
           },
           "expr": "sum by (node) (rate(otelcol_exporter_send_failed_log_records[5m]))",
           "legendFormat": "logs {{node}}",
-          "refId": "A",
+          "refId": "B",
           "editorMode": "code",
           "range": true
         }

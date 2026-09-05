@@ -51,20 +51,27 @@
   register: _nb_keys
   changed_when: false
 
+# body is one pre-rendered JSON string, not a YAML dict of per-key Jinja
+# expressions. The dict form silently truncates the request the moment any
+# value mixes a filter with a conditional (a real 400 body of only 53 bytes
+# for a ~170-byte payload) - the uri module's recursive arg-templating does
+# not compose with that combination. to_json sidesteps it entirely.
 - name: Create missing setup keys
   ansible.builtin.uri:
     url: "{{ nbcfg_api }}/setup-keys"
     method: POST
     headers: "{{ _nb_headers }}"
     body_format: json
-    body:
-      name: "{{ item.name }}"
-      type: reusable
-      expires_in: "{{ nbcfg_setup_key_ttl }}"
-      revoked: false
-      auto_groups: "{{ item.groups | map('extract', _nb_gid) | list }}"
-      usage_limit: 0
-      ephemeral: false
+    body: >-
+      {{ {
+        'name': item.name,
+        'type': ('one-off' if (item.usage_limit | default(0)) == 1 else 'reusable'),
+        'expires_in': nbcfg_setup_key_ttl,
+        'revoked': false,
+        'auto_groups': (item.groups | map('extract', _nb_gid) | list),
+        'usage_limit': (item.usage_limit | default(0)),
+        'ephemeral': false
+      } | to_json }}
     status_code: [200, 201]
   loop: "{{ nbcfg_setup_keys }}"
   loop_control: { label: "{{ item.name }}" }

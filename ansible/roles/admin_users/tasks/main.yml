@@ -1,0 +1,41 @@
+---
+# Additive only: creates or updates the accounts listed in admin_users on this
+# play's target hosts. Never removes an account, key or sudoers file that is
+# not in the current list, so different plays can grant different users to
+# different host groups without one play's list clobbering another's.
+
+- name: Ensure administrative accounts exist
+  become: true
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    groups: "{{ item.groups | default(['sudo']) }}"
+    append: true
+    shell: /bin/bash
+    create_home: true
+  loop: "{{ admin_users }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: Install each account's public keys
+  become: true
+  ansible.posix.authorized_key:
+    user: "{{ item.0.name }}"
+    key: "{{ item.1 }}"
+    state: present
+  loop: "{{ admin_users | subelements('pubkeys') }}"
+  loop_control: { label: "{{ item.0.name }}" }
+
+# NOPASSWD, not just sudo-group membership: these are keys-only accounts with
+# no password set, so an interactive sudo prompt would be a lockout, not a
+# safeguard. validate runs visudo before the file replaces anything on disk,
+# so a syntax error fails the play instead of breaking sudo cluster-wide.
+- name: Grant passwordless sudo via a dedicated sudoers.d file
+  become: true
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ item.sudoers_file }}"
+    content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ admin_users }}"
+  loop_control: { label: "{{ item.sudoers_file }}" }

@@ -1,0 +1,23 @@
+{{ ansible_managed | comment }}
+# Compose automatically merges this file with docker-compose.yml (generated
+# by NetBird's own installer, not ours to edit) when both sit in the same
+# directory. That merge is the only way to change these services' logging:
+# the daemon-level default in /etc/docker/daemon.json is not enough, because
+# the vendor file pins "driver: json-file" explicitly per service, and an
+# explicit per-service value always wins over the daemon default.
+services:
+  traefik:
+    logging:
+      driver: journald
+      options:
+        tag: netbird-traefik
+  dashboard:
+    logging:
+      driver: journald
+      options:
+        tag: netbird-dashboard
+  netbird-server:
+    logging:
+      driver: journald
+      options:
+        tag: netbird-server
