@@ -394,7 +394,7 @@
     {
       "id": 9,
       "type": "row",
-      "title": "Interconnect",
+      "title": "Network",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -407,7 +407,7 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "200GbE throughput",
+      "title": "200GbE Spark Interconnect",
       "description": "PHY counters, actual bytes on the wire. One host path saturates near 112 Gb/s, both together near 196.",
       "datasource": {
         "type": "prometheus",
@@ -476,8 +476,8 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Management NIC",
-      "description": "",
+      "title": "Primary NIC",
+      "description": "Primary/default-route interface on every host - enP7s7 on the Sparks, ens5 on the AWS instances.",
       "datasource": {
         "type": "prometheus",
         "uid": "thanos"
@@ -494,7 +494,7 @@
             "type": "prometheus",
             "uid": "thanos"
           },
-          "expr": "rate(node_network_transmit_bytes_total{device=\"enP7s7\"}[1m])*8",
+          "expr": "rate(node_network_transmit_bytes_total{device=~\"enP7s7|ens5\"}[1m])*8",
           "legendFormat": "tx {{node}}",
           "refId": "A",
           "editorMode": "code",
@@ -505,7 +505,7 @@
             "type": "prometheus",
             "uid": "thanos"
           },
-          "expr": "rate(node_network_receive_bytes_total{device=\"enP7s7\"}[1m])*8",
+          "expr": "rate(node_network_receive_bytes_total{device=~\"enP7s7|ens5\"}[1m])*8",
           "legendFormat": "rx {{node}}",
           "refId": "B",
           "editorMode": "code",
