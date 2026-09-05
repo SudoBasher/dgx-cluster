@@ -1,0 +1,316 @@
+---
+- name: Select the key this play uses to probe the API
+  ansible.builtin.set_fact:
+    _ms_probe_key: >-
+      {{ (ms_api_keys | default([]) | selectattr('name','equalto','claude')
+          | map(attribute='key') | list | first)
+         | default((ms_api_keys | default([]) | map(attribute='key') | list | first)
+                   | default('', true), true) }}
+  no_log: true
+
+- name: Derive served model name from repo id when not set
+  ansible.builtin.set_fact:
+    _ms_served_name: >-
+      {{ ms_served_name if ms_served_name | length > 0
+         else (ms_model_repo | basename | lower) }}
+
+- name: Fail early on an enabled node with no model configured
+  ansible.builtin.assert:
+    that:
+      - ms_model_repo | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} has ms_enabled=true but no ms_model_repo.
+      Set one in host_vars/{{ inventory_hostname }}.yml, or set
+      ms_enabled=false to leave this node free.
+  when: ms_enabled
+
+# ---------------------------------------------------------------- disabled --
+# Tear down cleanly so the node is genuinely free for another workload.
+
+- name: Tear down the model server
+  when: not ms_enabled
+  become: true
+  block:
+    - name: Stop and disable the service
+      ansible.builtin.systemd:
+        name: "{{ ms_service_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove any lingering container
+      ansible.builtin.command:
+        cmd: docker rm -f {{ ms_container_name }}
+      register: _ms_rm
+      changed_when: _ms_rm.rc == 0
+      failed_when: false
+
+    - name: Remove the unit file
+      ansible.builtin.file:
+        path: /etc/systemd/system/{{ ms_service_name }}.service
+        state: absent
+      notify: reload systemd
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is disabled. Model cache left in
+          {{ ms_cache_dir }}; delete it manually to reclaim disk.
+
+# ----------------------------------------------------------------- enabled --
+
+- name: Deploy the model server
+  when: ms_enabled
+  block:
+    - name: Ensure cache directories exist
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      loop:
+        - "{{ ms_cache_dir }}"
+        # rsync creates the final path component but not its parents, so hub/
+        # must exist before a peer sync into hub/models--*.
+        - "{{ ms_cache_dir }}/hub"
+        - "{{ ms_compile_cache_dir }}"
+
+    # Hugging Face stores each repo as hub/models--<org>--<name>, with
+    # snapshots/ holding symlinks into blobs/. rsync -a preserves that layout.
+    - name: Compute the cache directory name for this repo
+      ansible.builtin.set_fact:
+        _ms_model_dir: "models--{{ ms_model_repo | replace('/', '--') }}"
+
+    - name: Pull the serving image
+      ansible.builtin.command:
+        cmd: docker pull {{ ms_image }}
+      register: _ms_pull
+      changed_when: >-
+        'Downloaded newer image' in _ms_pull.stdout
+        or 'Pulling from' in _ms_pull.stdout
+      # A 10+ GB multi-arch pull on first run.
+      async: 3600
+      poll: 15
+
+    # The download runs in a container as root, so the cache ends up
+    # root-owned with some files at mode 600 regardless of who owns the
+    # directory. A peer sync reads it as {{ ansible_user }} over ssh and would
+    # fail on those. Normalise before anything reads or writes the cache.
+    - name: Normalise cache ownership
+      become: true
+      ansible.builtin.file:
+        path: "{{ ms_cache_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: true
+
+    - name: Check whether weights are already cached
+      ansible.builtin.command:
+        cmd: >-
+          docker run --rm
+          --volume {{ ms_cache_dir }}:/root/.cache/huggingface
+          --env HF_HOME=/root/.cache/huggingface
+          --entrypoint python3 {{ ms_image }}
+          -c "import sys;from huggingface_hub import snapshot_download;
+          sys.exit(0 if snapshot_download('{{ ms_model_repo }}',
+          local_files_only=True) else 1)"
+      register: _ms_cached
+      changed_when: false
+      failed_when: false
+      when: ms_predownload
+
+    # ------------------------------------------------ weights from a peer --
+    # Copying over the 200GbE link beats pulling the same bytes from the
+    # internet again. Only attempted when the local cache is cold.
+
+    - name: Peer weight sync
+      when:
+        - ms_predownload
+        - _ms_cached.rc != 0
+        - ms_weights_peer | length > 0
+      block:
+        - name: Ensure rsync is installed
+          become: true
+          ansible.builtin.apt:
+            name: rsync
+            state: present
+            update_cache: false
+
+        - name: Check whether the peer holds this model
+          ansible.builtin.command:
+            cmd: >-
+              ssh -i {{ ms_weights_peer_key }} -o BatchMode=yes
+              -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10
+              {{ ms_weights_peer }}
+              test -d {{ ms_cache_dir }}/hub/{{ _ms_model_dir }}/snapshots
+          register: _ms_peer_has
+          changed_when: false
+          failed_when: false
+
+        - name: Sync weights from the peer over the interconnect
+          ansible.builtin.command:
+            cmd: >-
+              rsync -a --partial --human-readable
+              -e "ssh -i {{ ms_weights_peer_key }} -o BatchMode=yes
+              -o StrictHostKeyChecking=accept-new
+              -c aes128-gcm@openssh.com"
+              {{ ms_weights_peer }}:{{ ms_cache_dir }}/hub/{{ _ms_model_dir }}/
+              {{ ms_cache_dir }}/hub/{{ _ms_model_dir }}/
+          when: _ms_peer_has.rc == 0
+          register: _ms_rsync
+          changed_when: true
+          async: "{{ ms_predownload_timeout }}"
+          poll: 15
+
+        - name: Note when the peer did not have it
+          ansible.builtin.debug:
+            msg: >-
+              {{ ms_weights_peer }} does not have {{ ms_model_repo }} cached;
+              falling back to a download from Hugging Face.
+          when: _ms_peer_has.rc != 0
+
+        # Registered under a distinct name on purpose. A skipped task still
+        # overwrites its registered variable with a dict that has no rc, so
+        # reusing _ms_cached here would clobber the earlier result on any node
+        # that skips this block.
+        - name: Re-check the local cache after sync
+          ansible.builtin.command:
+            cmd: >-
+              docker run --rm
+              --volume {{ ms_cache_dir }}:/root/.cache/huggingface
+              --env HF_HOME=/root/.cache/huggingface
+              --entrypoint python3 {{ ms_image }}
+              -c "import sys;from huggingface_hub import snapshot_download;
+              sys.exit(0 if snapshot_download('{{ ms_model_repo }}',
+              local_files_only=True) else 1)"
+          register: _ms_cached_after
+          changed_when: false
+          failed_when: false
+
+    - name: Download model weights from Hugging Face
+      ansible.builtin.command:
+        cmd: >-
+          docker run --rm
+          --volume {{ ms_cache_dir }}:/root/.cache/huggingface
+          --env HF_HOME=/root/.cache/huggingface
+          {% if ms_hf_token | length > 0 %}--env HF_TOKEN={{ ms_hf_token }}{% endif %}
+          --entrypoint python3 {{ ms_image }}
+          -c "from huggingface_hub import snapshot_download;
+          snapshot_download('{{ ms_model_repo }}', max_workers=8)"
+      when:
+        - ms_predownload
+        # Use the post-sync result when the peer block ran, the initial check
+        # otherwise.
+        - (_ms_cached_after.rc if _ms_cached_after.rc is defined
+           else _ms_cached.rc) != 0
+      changed_when: true
+      async: "{{ ms_predownload_timeout }}"
+      poll: 30
+
+    # The download runs in a container as root, so the cache ends up
+    # root-owned with some files at mode 600 regardless of who owns the
+    # directory. A peer sync reads it as {{ ansible_user }} over ssh and would
+    # fail on those. Normalise before anything reads or writes the cache.
+    - name: Normalise cache ownership after download
+      become: true
+      ansible.builtin.file:
+        path: "{{ ms_cache_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: true
+
+    - name: Source-network allowlist
+      become: true
+      block:
+        - name: Install the allowlist script
+          ansible.builtin.template:
+            src: vllm-firewall.sh.j2
+            dest: /usr/local/sbin/vllm-firewall
+            owner: root
+            group: root
+            mode: "0750"
+          register: _ms_fw_script
+
+        - name: Install the allowlist unit
+          ansible.builtin.template:
+            src: vllm-firewall.service.j2
+            dest: /etc/systemd/system/vllm-firewall.service
+            owner: root
+            group: root
+            mode: "0644"
+          register: _ms_fw_unit
+          notify: reload systemd
+
+        - name: Apply unit changes now
+          ansible.builtin.meta: flush_handlers
+
+        # Docker rebuilds its chains on restart, so this is enabled to reapply
+        # at boot as well as being run here.
+        # Reapply only when the rules actually changed; the unit is oneshot
+        # with RemainAfterExit, so an unconditional restart would report
+        # changed on every run.
+        - name: Enable and apply the allowlist
+          ansible.builtin.systemd:
+            name: vllm-firewall
+            enabled: true
+            state: >-
+              {{ 'restarted'
+                 if (_ms_fw_script.changed or _ms_fw_unit.changed)
+                 else 'started' }}
+            daemon_reload: true
+
+    - name: Install the systemd unit
+      become: true
+      ansible.builtin.template:
+        src: vllm.service.j2
+        dest: /etc/systemd/system/{{ ms_service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: _ms_unit
+      notify: reload systemd
+
+    # The unit must be reloaded before we start it, not at the end of the play.
+    - name: Apply unit changes now
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start the service
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ ms_service_name }}"
+        enabled: true
+        state: "{{ 'restarted' if _ms_unit.changed else 'started' }}"
+
+    - name: Wait for the API to report healthy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ ms_port }}/health"
+        status_code: 200
+      register: _ms_health
+      until: _ms_health.status == 200
+      retries: "{{ (ms_health_timeout | int / 10) | int }}"
+      delay: 10
+      when: ms_wait_for_health
+
+    # /v1 is guarded once ms_api_keys is set, so this must authenticate. Uses
+    # the "claude" key: automation gets its own credential like every client.
+    - name: Confirm the served model is listed
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ ms_port }}/v1/models"
+        return_content: true
+        headers: >-
+          {{ {'Authorization': 'Bearer ' + _ms_probe_key} if _ms_probe_key | length > 0 else {} }}
+      register: _ms_models
+      when: ms_wait_for_health
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} serving
+          {{ (_ms_models.json.data | map(attribute='id') | list) | join(', ') }}
+          on port {{ ms_port }}
+      when: ms_wait_for_health

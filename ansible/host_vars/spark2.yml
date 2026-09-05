@@ -1,0 +1,31 @@
+---
+# spark2 (spark-9d80) — Qwen3.8-27B replica
+#
+# Identical to spark1 today. This file is the seam: to run something else here
+# later, change ms_model_repo and ms_served_name and re-run with
+# `--limit spark2`. spark1 is untouched.
+#
+# To free the node entirely instead, set ms_enabled: false. That stops the
+# service, disables it and removes the unit, leaving the weight cache in place.
+
+ms_enabled: true
+ms_model_repo: Qwen/Qwen3.8-27B-FP8
+ms_served_name: qwen3.8-27b
+ms_max_model_len: 262144
+ms_reasoning_parser: qwen3
+
+# Agent front ends (AnythingLLM among them) send tool_choice="auto", which vLLM
+# rejects with a 400 unless both of these are set.
+ms_enable_auto_tool_choice: true
+ms_tool_call_parser: qwen3_xml
+
+# Pull the 29 GB of weights from spark1 across the 200GbE link rather than
+# from Hugging Face. Falls back to a normal download if spark1 does not have
+# the model cached, which is what happens when this node is repointed at
+# something spark1 does not run.
+ms_weights_peer: spark1-ic
+
+# --- VPN -------------------------------------------------------------------
+nbc_setup_key: "{{ nbc_key_spark }}"   # spark-node -> sparks
+nbc_routes:
+  - "10.255.128.0/20"     # lab VLAN, for hosts that cannot run a client

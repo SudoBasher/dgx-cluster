@@ -1,0 +1,1433 @@
+{
+  "uid": "vllm-qwen",
+  "title": "vLLM and Qwen performance",
+  "description": "Serving performance for Qwen3.8-27B-FP8 on the DGX Sparks.",
+  "tags": [
+    "vllm",
+    "dgx",
+    "inference"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "label": "Node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "thanos"
+        },
+        "query": {
+          "query": "label_values(vllm:num_requests_running, node)",
+          "refId": "n"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Now",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Output tokens/s",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "sum by (node) (rate(vllm:generation_tokens_total{node=~\"$node\"}[1m]))",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "green",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Running",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "sum by (node) (vllm:num_requests_running{node=~\"$node\"})",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Queued",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "sum by (node) (vllm:num_requests_waiting{node=~\"$node\"})",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "KV cache used",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "vllm:kv_cache_usage_perc{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "value_and_name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.8
+              },
+              {
+                "color": "red",
+                "value": 0.95
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Requests in view",
+      "description": "When traffic actually happened in the selected time range. If this is flat at zero, every panel below is correctly empty - the cluster had no requests in view, not a broken dashboard. Widen the time range (top right) if you expected to see something.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "editorMode": "code",
+          "expr": "sum by (node) (increase(vllm:e2e_request_latency_seconds_count{node=~\"$node\"}[$__rate_interval]))",
+          "legendFormat": "{{node}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No requests in this window"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "Throughput",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Output tokens/s",
+      "description": "Tokens actually generated. On GB10 this is bounded by memory bandwidth, not compute: roughly 261 GB/s divided by the bytes of weights read per token.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "rate(vllm:generation_tokens_total{node=~\"$node\"}[1m])",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Prompt tokens/s",
+      "description": "Prefill volume. Spikes here explain latency spikes elsewhere.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 11
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "rate(vllm:prompt_tokens_total{node=~\"$node\"}[1m])",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Latency",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Time to first token",
+      "description": "Prefill time. Grows with prompt length; this is what long context costs you.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le,node) (rate(vllm:time_to_first_token_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le,node) (rate(vllm:time_to_first_token_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{node}}",
+          "refId": "B",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "auto",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No requests in this window"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Inter-token latency",
+      "description": "Perceived speed once generation starts. The reciprocal is tokens/s as a reader experiences it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le,node) (rate(vllm:inter_token_latency_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le,node) (rate(vllm:inter_token_latency_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{node}}",
+          "refId": "B",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "auto",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No requests in this window"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "End-to-end request latency",
+      "description": "Whole request. Qwen3.8 is a reasoning model, so most of this is thinking tokens the user never sees.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le,node) (rate(vllm:e2e_request_latency_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le,node) (rate(vllm:e2e_request_latency_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{node}}",
+          "refId": "B",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le,node) (rate(vllm:e2e_request_latency_seconds_bucket{node=~\"$node\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{node}}",
+          "refId": "C",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "auto",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No requests in this window"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 22,
+      "panels": [],
+      "title": "Clients",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Inference requests by source address. /metrics scrapes are excluded. Overlay addresses are stable per NetBird peer, so an address identifies a machine.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "mappings": [
+            {
+              "options": {
+                "100.123.19.191": {
+                  "text": "desktop2 (tommy)",
+                  "index": 0
+                },
+                "10.255.135.177": {
+                  "text": "desktop2 (lab LAN)",
+                  "index": 1
+                },
+                "172.17.0.1": {
+                  "text": "on-node (AnythingLLM / scrape)",
+                  "index": 2
+                },
+                "100.123.96.149": {
+                  "text": "spark1",
+                  "index": 3
+                },
+                "100.123.5.235": {
+                  "text": "spark2",
+                  "index": 4
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "noValue": "No inference requests in this window",
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 37
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "queryType": "range",
+          "expr": "sum by (ip) (count_over_time({service_name=\"vllm.service\"} | node =~ \"$node\" |= \"HTTP/1.1\" | regexp `(?P<ip>[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+):(?P<cport>[0-9]+) - \"(?P<method>[A-Z]+) (?P<path>[^ ]+) HTTP/[0-9.]+\" (?P<status>[0-9]+)` | path =~ \"/v1/.*|/invocations\" [$__interval]))",
+          "legendFormat": "{{ip}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Inference requests by client",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Who called, and whether they were authorised. A 401 here is a client without a valid key; investigate rather than ignore.",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "100.123.19.191": {
+                  "text": "desktop2 (tommy)",
+                  "index": 0
+                },
+                "10.255.135.177": {
+                  "text": "desktop2 (lab LAN)",
+                  "index": 1
+                },
+                "172.17.0.1": {
+                  "text": "on-node (AnythingLLM / scrape)",
+                  "index": 2
+                },
+                "100.123.96.149": {
+                  "text": "spark1",
+                  "index": 3
+                },
+                "100.123.5.235": {
+                  "text": "spark2",
+                  "index": 4
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "noValue": "No inference requests in this window"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 37
+      },
+      "id": 24,
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Value"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "sum by (ip, status) (count_over_time({service_name=\"vllm.service\"} | node =~ \"$node\" |= \"HTTP/1.1\" | regexp `(?P<ip>[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+):(?P<cport>[0-9]+) - \"(?P<method>[A-Z]+) (?P<path>[^ ]+) HTTP/[0-9.]+\" (?P<status>[0-9]+)` | path =~ \"/v1/.*|/invocations\" [$__range]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Requests by client and status",
+      "type": "table"
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Capacity and pressure",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "KV cache usage",
+      "description": "Approaching 1.0 means vLLM starts preempting requests.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "vllm:kv_cache_usage_perc{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Preemptions/s",
+      "description": "Non-zero means the KV cache is full and work is being thrown away and redone.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "rate(vllm:num_preemptions_total{node=~\"$node\"}[$__rate_interval])",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "auto",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No requests in this window"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Prefix cache hit rate",
+      "description": "High hit rate means repeated prompt prefixes are skipping prefill entirely.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "rate(vllm:prefix_cache_hits_total{node=~\"$node\"}[$__rate_interval]) / clamp_min(rate(vllm:prefix_cache_queries_total{node=~\"$node\"}[$__rate_interval]), 1)",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "auto",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "noValue": "No requests in this window"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 17,
+      "type": "row",
+      "title": "Host",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 54
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "GPU temperature",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 55
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "DCGM_FI_DEV_GPU_TEMP{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "GPU power",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 55
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "DCGM_FI_DEV_POWER_USAGE{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Unified memory used",
+      "description": "GB10 shares one 121 GiB pool between CPU and GPU, so this is the only meaningful memory figure. DCGM reports nothing useful for GPU memory.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "thanos"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 55
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "thanos"
+          },
+          "expr": "node_memory_MemTotal_bytes{node=~\"$node\"} - node_memory_MemAvailable_bytes{node=~\"$node\"}",
+          "legendFormat": "{{node}}",
+          "refId": "A",
+          "interval": "",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

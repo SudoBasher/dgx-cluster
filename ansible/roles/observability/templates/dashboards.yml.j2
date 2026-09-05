@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+apiVersion: 1
+providers:
+  - name: dgx
+    orgId: 1
+    folder: DGX Cluster
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/dgx
+      foldersFromFilesStructure: false

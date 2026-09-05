@@ -1,0 +1,39 @@
+{{ ansible_managed | comment }}
+# AnythingLLM front end on port {{ allm_port }}.
+# Regenerate with: ansible-playbook site.yml --limit {{ inventory_hostname }}
+
+[Unit]
+Description=AnythingLLM web UI
+Documentation=https://docs.anythingllm.com
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+{% if allm_llm_base_path is search('host.docker.internal') %}
+# Not a hard dependency: the UI should still come up so it can be reconfigured
+# even when the model server is down.
+After={{ ms_service_name | default('vllm') }}.service
+{% endif %}
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=15
+TimeoutStartSec=300
+TimeoutStopSec=60
+
+ExecStartPre=-/usr/bin/docker rm -f {{ allm_container_name }}
+
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --name {{ allm_container_name }} \
+    --publish {{ allm_port }}:3001 \
+    --volume {{ allm_storage_dir }}:/app/server/storage \
+    --env-file {{ allm_base_dir }}/anythingllm.env \
+    --add-host host.docker.internal:host-gateway \
+    --cap-add SYS_ADMIN \
+    {{ allm_image }}
+
+ExecStop=/usr/bin/docker stop --time 30 {{ allm_container_name }}
+
+[Install]
+WantedBy=multi-user.target

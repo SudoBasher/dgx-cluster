@@ -1,0 +1,30 @@
+---
+# spark1 (spark-a01a) — Qwen3.8-27B replica
+#
+# Dense 27B, ~28 GB at FP8. Fits one node with room for the full context
+# window, so it runs standalone with no cross-node traffic.
+
+ms_enabled: true
+ms_model_repo: Qwen/Qwen3.8-27B-FP8
+ms_served_name: qwen3.8-27b
+ms_max_model_len: 262144
+
+# Qwen3.8 is a reasoning model. Without this the chain-of-thought is returned
+# inline as message content and can consume the whole token budget before the
+# answer starts.
+ms_reasoning_parser: qwen3
+
+# Agent front ends (AnythingLLM among them) send tool_choice="auto", which vLLM
+# rejects with a 400 unless both of these are set.
+ms_enable_auto_tool_choice: true
+ms_tool_call_parser: qwen3_xml
+
+# AnythingLLM front end, spark1 only. Reaches vLLM on the same host via
+# host.docker.internal, so it keeps working if the node's IP changes.
+allm_enabled: true
+allm_llm_model: qwen3.8-27b
+
+# --- VPN -------------------------------------------------------------------
+nbc_setup_key: "{{ nbc_key_spark }}"   # spark-node -> sparks
+nbc_routes:
+  - "10.255.128.0/20"     # lab VLAN, for hosts that cannot run a client

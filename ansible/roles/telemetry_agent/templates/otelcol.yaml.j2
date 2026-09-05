@@ -1,0 +1,131 @@
+# {{ ansible_managed }}
+extensions:
+  # Persists the send queue across restarts and outages.
+  file_storage:
+    directory: {{ tel_dir }}/queue
+    timeout: 10s
+
+receivers:
+  prometheus:
+    config:
+      scrape_configs:
+{% for job in tel_scrape_jobs %}
+        - job_name: {{ job.name }}
+          scrape_interval: {{ job.interval }}
+          scrape_timeout: {{ job.timeout | default('900ms' if job.interval == '1s' else '5s') }}
+          metrics_path: {{ job.path | default('/metrics') }}
+          static_configs:
+            - targets: {{ job.targets | to_json }}
+              labels:
+                node: {{ inventory_hostname }}
+{% endfor %}
+
+  journald:
+    units:
+{% for u in tel_journal_units | default(['vllm','anythingllm','docker','netbird']) %}
+      - {{ u }}
+{% endfor %}
+    priority: info
+
+processors:
+  # Bounds collector memory. Without this a backlog can grow until the host
+  # OOMs, which on a Spark means taking inference down with it.
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  resourcedetection:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+
+  batch:
+    send_batch_size: 8192
+    timeout: 5s
+
+  resource:
+    attributes:
+      - key: cluster
+        value: dgx
+        action: upsert
+      - key: node
+        value: {{ inventory_hostname }}
+        action: upsert
+
+  # The journald receiver puts the whole journal entry in the log BODY as a
+  # JSON object, not in attributes. Two consequences: service.name is never
+  # set, so everything lands as "unknown_service" and cannot be filtered by
+  # unit; and the rendered log line is an unreadable JSON blob. Fix both, in
+  # this order, since the body is replaced last.
+  transform/journald:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          # A container logging via Docker's journald driver carries
+          # CONTAINER_NAME (with a leading slash) but _SYSTEMD_UNIT is still
+          # docker.service, the daemon that wrote the entry on its behalf.
+          # Checked first so netbird-server/-dashboard/-traefik surface as
+          # their own service.name instead of collapsing into "docker.service".
+          - set(resource.attributes["service.name"], body["CONTAINER_NAME"])
+              where body["CONTAINER_NAME"] != nil
+          - replace_pattern(resource.attributes["service.name"], "^/", "")
+              where body["CONTAINER_NAME"] != nil
+          - set(resource.attributes["service.name"], body["_SYSTEMD_UNIT"])
+              where resource.attributes["service.name"] == nil
+                and body["_SYSTEMD_UNIT"] != nil
+          - set(resource.attributes["service.name"], body["SYSLOG_IDENTIFIER"])
+              where resource.attributes["service.name"] == nil
+                and body["SYSLOG_IDENTIFIER"] != nil
+          - set(attributes["priority"], body["PRIORITY"]) where body["PRIORITY"] != nil
+          - set(attributes["hostname"], body["_HOSTNAME"]) where body["_HOSTNAME"] != nil
+          - set(body, body["MESSAGE"]) where body["MESSAGE"] != nil
+
+exporters:
+  prometheusremotewrite:
+    endpoint: http://{{ tel_metrics_endpoint }}:19291/api/v1/receive
+    tls:
+      insecure: true          # traffic is already inside the WireGuard overlay
+    resource_to_telemetry_conversion:
+      enabled: true
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      queue_size: {{ tel_queue_size }}
+
+  otlphttp/loki:
+    logs_endpoint: http://{{ tel_logs_endpoint }}:3100/otlp/v1/logs
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      queue_size: {{ tel_queue_size }}
+
+service:
+  extensions: [file_storage]
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      # Scraped by this same collector so the agent monitors itself.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [journald]
+      processors: [memory_limiter, resourcedetection, resource, transform/journald, batch]
+      exporters: [otlphttp/loki]

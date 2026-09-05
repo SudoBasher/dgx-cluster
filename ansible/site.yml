@@ -1,0 +1,91 @@
+---
+- name: Deploy model servers to the Spark nodes
+  hosts: sparks
+  gather_facts: true
+  # Nodes are independent; a failure on one must not stop the other.
+  any_errors_fatal: false
+  serial: 0
+
+  # vLLM API keys are credentials; kept out of git.
+  vars_files:
+    - ../.secrets/vllm-keys.yml
+
+  pre_tasks:
+    - name: Verify Docker exposes the nvidia runtime
+      ansible.builtin.command:
+        cmd: docker info --format '{{ "{{" }}range $k,$v := .Runtimes{{ "}}" }}{{ "{{" }}$k{{ "}}" }} {{ "{{" }}end{{ "}}" }}'
+      register: _runtimes
+      changed_when: false
+
+    - name: Fail if the nvidia runtime is missing
+      ansible.builtin.assert:
+        that: "'nvidia' in _runtimes.stdout"
+        fail_msg: >-
+          Docker on {{ inventory_hostname }} has no nvidia runtime, so --gpus
+          will fail. Run RUNBOOK.md section 5 first:
+          sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+
+    - name: Check free space for weights
+      ansible.builtin.command:
+        cmd: df --output=avail -BG /
+      register: _avail
+      changed_when: false
+
+    - name: Fail if disk is short
+      ansible.builtin.assert:
+        that: (_avail.stdout_lines[1] | trim | regex_replace('G$','') | int) > 100
+        fail_msg: >-
+          Less than 100 GB free on {{ inventory_hostname }};
+          model weights and the serving image will not fit.
+
+    - name: Ensure base packages are installed
+      become: true
+      ansible.builtin.apt:
+        name: "{{ node_packages | default([]) }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      register: _pkgs
+      # A stale index makes a present package look missing and aborts the whole
+      # transaction, taking the other packages with it. Retry once on a forced
+      # refresh before failing.
+      failed_when: false
+
+    - name: Force an index refresh and retry if the first pass failed
+      become: true
+      when: _pkgs.failed | default(false)
+      block:
+        - name: Drop the archive index
+          ansible.builtin.shell:
+            cmd: rm -f /var/lib/apt/lists/ports.ubuntu.com_*
+          changed_when: true
+
+        - name: Reinstall after refresh
+          ansible.builtin.apt:
+            name: "{{ node_packages | default([]) }}"
+            state: present
+            update_cache: true
+
+    - name: Grant docker access to named accounts
+      become: true
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_users | default([]) }}"
+      register: _docker_users
+
+    - name: Note that group membership needs a fresh login
+      ansible.builtin.debug:
+        msg: >-
+          Added to the docker group on {{ inventory_hostname }}:
+          {{ _docker_users.results | selectattr('changed') | map(attribute='item')
+             | list | join(', ') }}. Log out and back in, or run `newgrp docker`,
+          before the change takes effect in an existing shell.
+      when: _docker_users.results | selectattr('changed') | list | length > 0
+
+  roles:
+    - role: model_server
+    # Front end. Enabled per node via allm_enabled; runs after the model
+    # server so it has something to talk to on first start.
+    - role: anythingllm

@@ -1,0 +1,33 @@
+---
+# netbird-cp is the NetBird server itself; it does not run a client and has no
+# overlay address, unlike every other telemetry source in this project. It
+# reaches obs-write over the VPC directly instead - both instances sit in the
+# same VPC and the observability security group already admits all in-VPC
+# traffic (terraform/security.tf: obs_from_vpc).
+tel_metrics_endpoint: "10.200.10.116"   # obs-write, VPC-private IP
+tel_logs_endpoint: "10.200.10.116"      # obs-write, VPC-private IP
+tel_enable_dcgm: false                  # no GPU on this instance
+tel_enable_node_exporter: true          # host CPU/memory/disk on the Fleet health dashboard
+
+tel_journal_units:
+  - ssh
+  # docker.service, not a per-container unit: this host's containers are
+  # docker-compose managed, so the daemon is journald's attribution point
+  # once /etc/docker/daemon.json sets log-driver=journald (roles/netbird_server).
+  # transform/journald then re-attributes each entry to its own container
+  # name (netbird-server, netbird-dashboard, netbird-traefik) via CONTAINER_NAME.
+  - docker
+
+# An empty list here is not "zero metrics" - the collector's pipeline always
+# references the prometheus receiver, and an empty scrape_configs makes that
+# receiver fail its own validation ("no Prometheus scrape_configs or target
+# allocator set"), which crash-loops the whole collector, logs included. The
+# one job every other host already carries - the collector watching itself -
+# is the minimum that keeps the receiver valid.
+tel_scrape_jobs:
+  - name: otelcol
+    targets: ["127.0.0.1:8888"]
+    interval: 1s
+  - name: node
+    targets: ["127.0.0.1:9100"]
+    interval: 1s

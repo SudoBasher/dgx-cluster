@@ -1,0 +1,11 @@
+---
+# Administrative OS accounts, distinct from the per-service accounts
+# (claude, ubuntu) that own the deployed workloads. Real values live in
+# host_vars/ or group_vars/ per node, not here.
+#
+# Each item:
+#   name:          username
+#   sudoers_file:  filename under /etc/sudoers.d/ granting NOPASSWD sudo
+#   pubkeys:       list of public keys appended to authorized_keys
+#   groups:        supplementary groups; defaults to [sudo]
+admin_users: []

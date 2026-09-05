@@ -1,0 +1,29 @@
+---
+# Overlay addresses, read from the NetBird API at deploy time.
+obs_write_ip: "100.123.158.113"
+obs_read_ip: "100.123.229.83"
+
+# Self-monitoring. The compactor is the component predicted to cause query
+# slowness, so its own metrics matter most.
+tel_metrics_endpoint: "{{ obs_write_ip }}"
+tel_logs_endpoint: "{{ obs_write_ip }}"
+tel_enable_dcgm: false
+
+tel_journal_units:
+  - docker
+  - netbird
+  - otelcol-contrib
+
+tel_scrape_jobs: >-
+  {{
+    [{'name':'node','targets':['127.0.0.1:9100'],'interval':'1s'},
+     {'name':'otelcol','targets':['127.0.0.1:8888'],'interval':'1s'}]
+    +
+    ( [{'name':'thanos-receive','targets':['127.0.0.1:10902'],'interval':'15s'},
+       {'name':'thanos-compact','targets':['127.0.0.1:10903'],'interval':'15s'},
+       {'name':'loki','targets':['127.0.0.1:3100'],'interval':'15s'}]
+      if obs_role == 'write' else
+      [{'name':'thanos-store','targets':['127.0.0.1:19191'],'interval':'15s'},
+       {'name':'thanos-query','targets':['127.0.0.1:19192'],'interval':'15s'},
+       {'name':'grafana','targets':['127.0.0.1:3000'],'interval':'15s'}] )
+  }}

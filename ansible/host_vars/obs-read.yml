@@ -1,0 +1,5 @@
+---
+# Key grants both aws-infra and obs-read. The second group is what the
+# teammate Grafana policy targets.
+nbc_setup_key: "{{ nbc_key_obs_read }}"
+obs_role: read

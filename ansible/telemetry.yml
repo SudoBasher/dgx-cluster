@@ -1,0 +1,9 @@
+---
+- name: Telemetry agents on every monitored host
+  hosts: sparks:observability:netbird-cp
+  gather_facts: true
+  # Setup keys are credentials; kept out of git.
+  vars_files:
+    - ../.secrets/netbird-keys.yml
+  roles:
+    - role: telemetry_agent

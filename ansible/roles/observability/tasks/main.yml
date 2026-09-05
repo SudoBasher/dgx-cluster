@@ -1,0 +1,194 @@
+---
+- name: Install Docker
+  become: true
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure Docker is running
+  become: true
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+# Each image runs as a different non-root uid, read from its own config
+# rather than assumed: thanos 1001, loki 10001, grafana 472. Getting this
+# wrong shows up as "permission denied" on the data dir and a crash loop.
+- name: Create data directories with the uid each container runs as
+  become: true
+  ansible.builtin.file:
+    path: "{{ obs_dir }}/{{ item.dir }}"
+    state: directory
+    owner: "{{ item.uid }}"
+    group: "{{ item.uid }}"
+    mode: "0775"
+  loop: >-
+    {{ (obs_role == 'write')
+       | ternary([{'dir':'thanos-data','uid':1001},
+                  {'dir':'compact-data','uid':1001},
+                  {'dir':'loki-data','uid':10001}],
+                 [{'dir':'store-data','uid':1001},
+                  {'dir':'grafana-data','uid':472}]) }}
+  loop_control:
+    label: "{{ item.dir }} (uid {{ item.uid }})"
+
+- name: Write the S3 objstore config
+  become: true
+  ansible.builtin.template:
+    src: objstore.yml.j2
+    dest: "{{ obs_dir }}/objstore.yml"
+    mode: "0644"
+  notify: restart observability
+
+- name: Write Loki config
+  become: true
+  ansible.builtin.template:
+    src: loki.yml.j2
+    dest: "{{ obs_dir }}/loki.yml"
+    mode: "0644"
+  when: obs_role == 'write'
+  notify: restart observability
+
+- name: Write Grafana datasources
+  become: true
+  ansible.builtin.template:
+    src: datasources.yml.j2
+    dest: "{{ obs_dir }}/datasources.yml"
+    mode: "0644"
+  when: obs_role == 'read'
+  notify: restart observability
+
+- name: Provision Grafana dashboards
+  become: true
+  when: obs_role == 'read'
+  block:
+    - name: Dashboard directory
+      ansible.builtin.file:
+        path: "{{ obs_dir }}/dashboards"
+        state: directory
+        mode: "0755"
+
+    - name: Dashboard provider config
+      ansible.builtin.template:
+        src: dashboards.yml.j2
+        dest: "{{ obs_dir }}/dashboards.yml"
+        mode: "0644"
+      notify: restart observability
+
+    # allowUiUpdates is on, so edits made in the browser stick until the next
+    # playbook run overwrites them. Export and commit anything worth keeping.
+    - name: Dashboard definitions
+      ansible.builtin.copy:
+        src: "dashboards/{{ item }}"
+        dest: "{{ obs_dir }}/dashboards/{{ item }}"
+        mode: "0644"
+      loop:
+        - vllm-qwen.json
+        - fleet.json
+        - obs-self.json
+      notify: restart observability
+
+- name: Write the compose file
+  become: true
+  ansible.builtin.template:
+    src: "compose-{{ obs_role }}.yml.j2"
+    dest: "{{ obs_dir }}/docker-compose.yml"
+    mode: "0644"
+  notify: restart observability
+
+- name: Bring the stack up
+  become: true
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ obs_dir }}"
+  register: _obs_up
+  changed_when: "'Started' in _obs_up.stderr or 'Created' in _obs_up.stderr or 'Recreated' in _obs_up.stderr"
+
+- name: Wait for the local health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ (obs_role == 'write') | ternary(10902, 3000) }}/{{ (obs_role == 'write') | ternary('-/ready', 'api/health') }}"
+    status_code: [200, 302]
+  register: _obs_health
+  until: _obs_health.status in [200, 302]
+  retries: 30
+  delay: 5
+
+# Declarative Grafana accounts beyond the bootstrap "admin", via Grafana's own
+# HTTP API. Only meaningful on obs-read, where Grafana actually runs.
+- name: Grafana accounts
+  when: obs_role == 'read' and obs_grafana_users | length > 0
+  block:
+    - name: Look up existing Grafana accounts
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/users/lookup?loginOrEmail={{ item.login }}"
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        status_code: [200, 404]
+      loop: "{{ obs_grafana_users }}"
+      loop_control: { label: "{{ item.login }}" }
+      register: _obs_gf_lookup
+      no_log: true
+
+    # The password only ever appears in this one request body.
+    - name: Create missing Grafana accounts
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/admin/users"
+        method: POST
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          login: "{{ item.item.login }}"
+          password: "{{ item.item.password }}"
+        status_code: [200]
+      loop: "{{ _obs_gf_lookup.results }}"
+      loop_control: { label: "{{ item.item.login }}" }
+      when: item.status == 404
+      no_log: true
+
+    - name: Re-read accounts so ids are available for role/admin updates
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/users/lookup?loginOrEmail={{ item.login }}"
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+      loop: "{{ obs_grafana_users }}"
+      loop_control: { label: "{{ item.login }}" }
+      register: _obs_gf_ids
+      no_log: true
+
+    # Org role and the server-wide admin flag are separate switches in
+    # Grafana's API; a full admin account needs both set.
+    - name: Set organisation role
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/org/users/{{ item.json.id }}"
+        method: PATCH
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          role: "{{ 'Admin' if item.item.is_admin | default(false) else 'Editor' }}"
+        status_code: [200]
+      loop: "{{ _obs_gf_ids.results }}"
+      loop_control: { label: "{{ item.item.login }}" }
+
+    - name: Set server-admin flag
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/api/admin/users/{{ item.json.id }}/permissions"
+        method: PUT
+        url_username: admin
+        url_password: "{{ obs_grafana_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          isGrafanaAdmin: "{{ item.item.is_admin | default(false) }}"
+        status_code: [200]
+      loop: "{{ _obs_gf_ids.results }}"
+      loop_control: { label: "{{ item.item.login }}" }

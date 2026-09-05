@@ -1,0 +1,198 @@
+---
+- name: API token is required
+  ansible.builtin.assert:
+    that: nbcfg_token | length > 0
+    fail_msg: "nbcfg_token unset; expected from .secrets/netbird-token"
+
+- name: Set common request headers
+  ansible.builtin.set_fact:
+    _nb_headers:
+      Authorization: "Token {{ nbcfg_token }}"
+      Content-Type: application/json
+  no_log: true
+
+# ---------------------------------------------------------------- groups --
+
+- name: Read existing groups
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/groups"
+    headers: "{{ _nb_headers }}"
+  register: _nb_groups
+  changed_when: false
+
+- name: Create missing groups
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/groups"
+    method: POST
+    headers: "{{ _nb_headers }}"
+    body_format: json
+    body: { name: "{{ item }}", peers: [] }
+    status_code: [200, 201]
+  loop: "{{ nbcfg_groups }}"
+  when: item not in (_nb_groups.json | map(attribute='name') | list)
+
+- name: Re-read groups so ids are available
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/groups"
+    headers: "{{ _nb_headers }}"
+  register: _nb_groups
+  changed_when: false
+
+- name: Map group name to id
+  ansible.builtin.set_fact:
+    _nb_gid: "{{ dict(_nb_groups.json | map(attribute='name') | zip(_nb_groups.json | map(attribute='id'))) }}"
+
+# ------------------------------------------------------------ setup keys --
+
+- name: Read existing setup keys
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/setup-keys"
+    headers: "{{ _nb_headers }}"
+  register: _nb_keys
+  changed_when: false
+
+# body is one pre-rendered JSON string, not a YAML dict of per-key Jinja
+# expressions. The dict form silently truncates the request the moment any
+# value mixes a filter with a conditional (a real 400 body of only 53 bytes
+# for a ~170-byte payload) - the uri module's recursive arg-templating does
+# not compose with that combination. to_json sidesteps it entirely.
+- name: Create missing setup keys
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/setup-keys"
+    method: POST
+    headers: "{{ _nb_headers }}"
+    body_format: json
+    body: >-
+      {{ {
+        'name': item.name,
+        'type': ('one-off' if (item.usage_limit | default(0)) == 1 else 'reusable'),
+        'expires_in': nbcfg_setup_key_ttl,
+        'revoked': false,
+        'auto_groups': (item.groups | map('extract', _nb_gid) | list),
+        'usage_limit': (item.usage_limit | default(0)),
+        'ephemeral': false
+      } | to_json }}
+    status_code: [200, 201]
+  loop: "{{ nbcfg_setup_keys }}"
+  loop_control: { label: "{{ item.name }}" }
+  when: item.name not in (_nb_keys.json | map(attribute='name') | list)
+  # The key value is only ever returned once, at creation.
+  register: _nb_new_keys
+  no_log: true
+
+- name: Report any newly issued setup keys
+  ansible.builtin.debug:
+    msg: >-
+      New setup key {{ item.json.name }}: {{ item.json.key }}
+      (shown once; store it in .secrets/netbird-keys.yml)
+  loop: "{{ _nb_new_keys.results | default([]) | selectattr('json', 'defined') | list }}"
+  loop_control: { label: "{{ item.json.name | default('?') }}" }
+
+# -------------------------------------------------------------- policies --
+
+- name: Read existing policies
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/policies"
+    headers: "{{ _nb_headers }}"
+  register: _nb_pol
+  changed_when: false
+
+- name: Create missing policies
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/policies"
+    method: POST
+    headers: "{{ _nb_headers }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      description: "{{ item.name }}"
+      enabled: true
+      rules:
+        - name: "{{ item.name }}"
+          enabled: true
+          action: accept
+          protocol: "{{ item.protocol }}"
+          bidirectional: "{{ item.bidirectional }}"
+          sources: ["{{ _nb_gid[item.src] }}"]
+          destinations: ["{{ _nb_gid[item.dst] }}"]
+          ports: "{{ item.ports | default(omit) }}"
+    status_code: [200, 201]
+  loop: "{{ nbcfg_policies }}"
+  loop_control: { label: "{{ item.name }}" }
+  when: item.name not in (_nb_pol.json | map(attribute='name') | list)
+
+# ---------------------------------------------------------------- routes --
+
+- name: Read peers and routes
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/{{ item }}"
+    headers: "{{ _nb_headers }}"
+  register: _nb_pr
+  loop: [peers, routes]
+  changed_when: false
+
+- name: Map peer name to id
+  ansible.builtin.set_fact:
+    _nb_pid: "{{ dict(_nb_pr.results[0].json | map(attribute='name') | zip(_nb_pr.results[0].json | map(attribute='id'))) }}"
+    _nb_existing_routes: "{{ _nb_pr.results[1].json }}"
+
+- name: Create missing routes
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/routes"
+    method: POST
+    headers: "{{ _nb_headers }}"
+    body_format: json
+    body:
+      description: "{{ item.0.network_id }} via {{ item.1 }}"
+      network_id: "{{ item.0.network_id }}"
+      network: "{{ item.0.network }}"
+      peer: "{{ _nb_pid[item.1] }}"
+      enabled: true
+      groups: "{{ item.0.distribution_groups | map('extract', _nb_gid) | list }}"
+      masquerade: "{{ item.0.masquerade }}"
+      metric: "{{ item.0.metric }}"
+    status_code: [200, 201]
+  loop: "{{ nbcfg_routes | subelements('peers') }}"
+  loop_control: { label: "{{ item.0.network_id }} via {{ item.1 }}" }
+  when:
+    - item.1 in _nb_pid
+    - not (_nb_existing_routes | selectattr('network_id','equalto',item.0.network_id)
+                              | selectattr('peer','equalto', _nb_pid[item.1] | default('')) | list | length)
+
+# ------------------------------------------------------------- lockdown --
+
+- name: Find the built-in Default policy
+  ansible.builtin.set_fact:
+    _nb_default: "{{ (_nb_pol.json | selectattr('name','equalto','Default') | list | first) | default({}) }}"
+
+- name: Disable the All-to-All default policy
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/policies/{{ _nb_default.id }}"
+    method: PUT
+    headers: "{{ _nb_headers }}"
+    body_format: json
+    # PUT replaces the policy, so it must be sent back whole.
+    body:
+      name: "{{ _nb_default.name }}"
+      description: "{{ _nb_default.description | default('') }}"
+      enabled: false
+      rules: "{{ _nb_default.rules | map('combine', {'enabled': false}) | list }}"
+    status_code: [200]
+  when:
+    - nbcfg_disable_default_policy
+    - _nb_default.id is defined
+    - _nb_default.enabled | default(false)
+
+- name: Show the policies now in force
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/policies"
+    headers: "{{ _nb_headers }}"
+  register: _nb_final
+  changed_when: false
+
+- name: Policies in force
+  ansible.builtin.debug:
+    msg: >-
+      {{ _nb_final.json | selectattr('enabled') | map(attribute='rules') | flatten
+         | map('combine', {}) | list
+         | map(attribute='name') | list }}

@@ -1,0 +1,60 @@
+# {{ ansible_managed }}
+# Query path and UI. Isolated from compaction so dashboards stay responsive.
+services:
+  memcached:
+    image: {{ obs_memcached_image }}
+    container_name: memcached
+    restart: always
+    network_mode: host
+    command: ["-m", "4096", "-I", "32m", "-p", "11211"]
+
+  thanos-store:
+    image: {{ obs_thanos_image }}
+    container_name: thanos-store
+    restart: always
+    network_mode: host
+    command:
+      - store
+      - --data-dir=/data
+      - --objstore.config-file=/etc/thanos/objstore.yml
+      - --grpc-address=0.0.0.0:19091
+      - --http-address=0.0.0.0:19191
+      - --index-cache-size=4GB
+      - --chunk-pool-size=6GB
+    volumes:
+      - {{ obs_dir }}/store-data:/data
+      - {{ obs_dir }}/objstore.yml:/etc/thanos/objstore.yml:ro
+
+  thanos-query:
+    image: {{ obs_thanos_image }}
+    container_name: thanos-query
+    restart: always
+    network_mode: host
+    command:
+      - query
+      - --http-address=0.0.0.0:19192
+      - --grpc-address=0.0.0.0:19292
+      # Recent data comes from receive, historical from the store gateway.
+      - --endpoint={{ obs_write_ip }}:10901
+      - --endpoint=127.0.0.1:19091
+      - --query.replica-label=replica
+      - --query.auto-downsampling
+    depends_on: [thanos-store]
+
+  grafana:
+    image: {{ obs_grafana_image }}
+    container_name: grafana
+    restart: always
+    network_mode: host
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "{{ obs_grafana_admin_password }}"
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_USERS_DEFAULT_THEME: "dark"
+    volumes:
+      - {{ obs_dir }}/grafana-data:/var/lib/grafana
+      - {{ obs_dir }}/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - {{ obs_dir }}/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - {{ obs_dir }}/dashboards:/etc/grafana/provisioning/dashboards/dgx:ro
+    depends_on: [thanos-query]

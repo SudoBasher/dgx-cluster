@@ -1,0 +1,11 @@
+---
+# Declarative NetBird access model. Runs against the API, so it needs no
+# managed host. Idempotent: a second run reports no changes.
+- name: NetBird groups, setup keys, policies and routes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    nbcfg_token: "{{ lookup('file', '../.secrets/netbird-token') | trim }}"
+  roles:
+    - role: netbird_config

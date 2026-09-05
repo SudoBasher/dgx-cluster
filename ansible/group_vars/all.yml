@@ -1,0 +1,41 @@
+---
+# Settings shared by every node. Anything here can be overridden per node in
+# host_vars/, which is how the two Sparks are allowed to diverge.
+
+ms_image: vllm/vllm-openai:latest
+ms_cache_dir: /opt/dgx-models
+ms_port: 8000
+
+# GB10 has one 121 GiB pool shared by CPU and GPU. Unlike a discrete card,
+# whatever vLLM reserves is taken away from the host, so do not push this to
+# the usual 0.90.
+ms_gpu_memory_utilization: 0.80
+
+# One GPU per node. Never raise this: tensor parallel across nodes would run
+# over an interconnect that manages 3 GB/s for NCCL collectives, which makes
+# prefill roughly 200x slower than keeping a model on one node.
+ms_tensor_parallel_size: 1
+
+# Accounts granted docker access without sudo. Membership is effectively
+# root-equivalent, since a container can bind-mount the host filesystem.
+# Takes effect on the user's next login session.
+docker_users:
+  - user
+
+# Packages installed on every node by site.yml. DGX OS ships only htop, top,
+# sar and iostat, so the monitoring and network tooling is added here rather
+# than by hand, which keeps a rebuilt node identical to a running one.
+node_packages:
+  - nvtop            # GPU utilisation, temps, per-process attribution
+  - btop
+  - glances
+  - htop
+  - iftop
+  - bmon
+  - nload
+  - dstat
+  - sysstat          # sar, iostat
+  - traceroute
+  - mtr-tiny         # traceroute plus continuous loss/latency per hop
+  - iperf3
+  - rsync            # peer weight sync between nodes

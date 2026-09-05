@@ -1,0 +1,45 @@
+---
+# Administrative OS accounts, separate from the per-service accounts (claude,
+# ubuntu) that own the deployed workloads. See roles/admin_users for the
+# mechanics: NOPASSWD sudo via a dedicated /etc/sudoers.d file, key-only login.
+
+# The account owner. Named to match the AWS createdBy tag and the isc-login
+# username, so identity is consistent across the whole stack. Every node in
+# scope: both Sparks, both observability nodes, and the NetBird control plane.
+- name: Owner admin account, sparks and observability nodes
+  hosts: sparks:observability
+  gather_facts: false
+  vars:
+    admin_users:
+      - name: tommy.aldo.sonin
+        sudoers_file: sudobasher
+        pubkeys:
+          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMeWVjU0kZhVGVQRNV5eQbJHxeC6DZ5yf97dn/FCaPiS chorizo1"
+  roles:
+    - role: admin_users
+
+- name: Owner admin account, NetBird control plane
+  hosts: netbird-cp
+  gather_facts: false
+  vars:
+    admin_users:
+      - name: tommy.aldo.sonin
+        sudoers_file: sudobasher
+        pubkeys:
+          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMeWVjU0kZhVGVQRNV5eQbJHxeC6DZ5yf97dn/FCaPiS chorizo1"
+  roles:
+    - role: admin_users
+
+# Teammate account, spark2 only, as requested. Not added to the sparks group
+# as a whole, so spark1 does not carry this login.
+- name: Teammate admin account, spark2 only
+  hosts: spark2
+  gather_facts: false
+  vars:
+    admin_users:
+      - name: alex.scammon
+        sudoers_file: vanguard
+        pubkeys:
+          - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINneJFQzMddyb/DKCvvwsQ0/MnJr4rW8Gn/JKylxPXmq alex.scammon"
+  roles:
+    - role: admin_users

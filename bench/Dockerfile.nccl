@@ -1,0 +1,3 @@
+FROM nccl-bench
+COPY allreduce_bw.cu /allreduce_bw.cu
+RUN nvcc -O3 -arch=sm_121 -o /allreduce_bw /allreduce_bw.cu -lnccl

@@ -1,0 +1,9 @@
+---
+- name: Join the Sparks to the VPN
+  hosts: sparks
+  gather_facts: true
+  # Setup keys are credentials; kept out of git.
+  vars_files:
+    - ../.secrets/netbird-keys.yml
+  roles:
+    - role: netbird_client
