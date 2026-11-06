@@ -879,6 +879,40 @@ The four pre-existing keys never hit this because none of their fields used a
 filter or a conditional — literal `type: reusable` and `usage_limit: 0`
 templated fine as plain dict values.
 
+### Reissuing an expired one-off key
+
+2026-10-14: `alex.scammon` needed a key for a new laptop. The key issued
+2026-09-04 had expired unused on 2026-10-04 — `nbcfg_setup_key_ttl` is 30 days
+and the clock starts at creation, not at first use.
+
+The role creates a setup key only when no key of that name exists, and has no
+update or delete path, so re-running the playbook does not refresh an expired
+key. A reissue is therefore a new entry under a new name:
+
+```yaml
+# roles/netbird_config/defaults/main.yml
+- { name: alex.scammon-laptop, groups: [teammates], usage_limit: 1 }
+```
+
+```bash
+cd ansible && ansible-playbook netbird-access.yml 2>&1 | tee ../logs/netbird-access-20261014.log
+```
+
+The key value prints once, in the "Report any newly issued setup keys" task,
+and is then only retrievable from `.secrets/netbird-keys.yml` where it is
+recorded by hand. Verify by re-running: the create task skips and the report
+task prints nothing (ok drops 14 -> 12, skipped rises 4 -> 6).
+
+The dead `alex.scammon` key stays in NetBird and in the defaults, commented, so
+the name stays taken and the next reader sees why there are two entries. Delete
+both the NetBird key and the entry if the accumulation starts to matter — the
+dashboard's Setup Keys page is the list that counts.
+
+Every other setup key was also expired at this point (`valid: false` on all
+six), which blocks new enrollments but not existing peers — an enrolled peer
+holds its own credentials and never re-reads the setup key. Worth a role change
+that reissues on expiry rather than six more manual renames.
+
 ---
 
 ## 18. Bringing netbird-cp into telemetry `[netbird-cp]`

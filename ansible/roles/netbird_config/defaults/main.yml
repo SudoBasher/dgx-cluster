@@ -20,7 +20,10 @@ nbcfg_setup_keys:
   - { name: teammate-device, groups: [teammates] }
   - { name: spark-node,      groups: [sparks] }
   - { name: aws-obs-write,   groups: [aws-infra] }
+  # Expired 2026-10-04 unused, 30 days after issue. Left in place because the
+  # role matches on name and will not reissue a key that already exists.
   - { name: alex.scammon,    groups: [teammates], usage_limit: 1 }
+  - { name: alex.scammon-laptop, groups: [teammates], usage_limit: 1 }
   # obs-read needs both: aws-infra for admin access, obs-read so the teammate
   # Grafana policy can target it without exposing obs-write.
   - { name: aws-obs-read,    groups: [aws-infra, obs-read] }
