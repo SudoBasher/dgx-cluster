@@ -27,6 +27,11 @@ ms_tensor_parallel_size: 1         # one GPU per node
 ms_trust_remote_code: true         # Qwen3.8 uses a custom architecture
 ms_dtype: auto                     # FP8 checkpoints are detected from config
 ms_extra_args: []                  # additional vLLM CLI flags
+# Each entry lands verbatim on the unit's ExecStart line, and systemd unquotes
+# ExecStart words: double quotes are stripped even mid-word. A JSON value must
+# be wrapped whole in single quotes or vLLM receives {key:value} and the
+# service crash-loops on the parse error. In YAML:
+#   - "'--override-generation-config={\"presence_penalty\":1.5}'"
 
 # --- Access control ---------------------------------------------------------
 # One entry per client: [{name, key}]. vLLM 0.28 takes a list, so a key can be

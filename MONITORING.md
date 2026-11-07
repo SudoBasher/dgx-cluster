@@ -342,7 +342,7 @@ $DGX spark1 'sudo journalctl -u vllm -f -o cat | grep --line-buffered -E "Avg pr
 ### AnythingLLM
 
 ```bash
-$DGX spark1 'sudo journalctl -u anythingllm -f'
+$DGX spark1 'sudo journalctl -u anythingllm -f'     # or spark2
 $DGX spark1 'curl -s http://127.0.0.1:3001/api/ping'
 ```
 
