@@ -327,6 +327,37 @@ re-download. Worth doing; not worth optimising further at this model size.
 
 ---
 
+## Deployed performance, Qwen3.6-35B-A3B NVFP4
+
+Measured 6 November 2026 on spark2, `nvidia/Qwen3.6-35B-A3B-NVFP4` on vLLM
+0.28.0 with the GB10 recipe flags (`RUNBOOK.md` section 20).
+
+| Measurement | spark2, 35B-A3B NVFP4 | spark1, 27B FP8 |
+|---|---|---|
+| Decode, single stream | 77.1 tok/s | 8.4 tok/s |
+| Time to first token | 0.07 s | 0.14 s |
+| Cold start | 3 min 28 s | ~7 min |
+| Weights in memory | 20.4 GiB | ~28 GiB |
+
+On vLLM 0.33.0 (7 November, `presence_penalty` 1.5 as server default) the same
+harness gives 78.9 tok/s and 0.06 s to first token. Two concurrent streams
+reached 103-119 tok/s combined.
+
+*Same harness for both: one warm-up, then three streamed runs of 512 tokens
+with thinking off. spark1 was re-measured in the same session, and its 8.4
+matches the top of the 4.3-8.4 range above.*
+
+The speed-up is the bandwidth argument from "Implications for model serving"
+playing out. A dense model has to read every weight for every token, so 28 GB
+at ~261 GB/s caps the 27B near 9 tok/s whatever the serving stack does. An MoE
+reads only the routed experts, about 3B parameters at 4 bits, and moves the
+ceiling up by an order of magnitude.
+
+The cost is depth. With ~3B parameters active per token, expect weaker results
+than the dense 27B on long reasoning and multi-step agent work. The two nodes
+now cover both ends: spark2 for interactive speed, spark1 when quality matters
+more than wait.
+
 ## Superseded conclusions
 
 Recorded because each was wrong in a way that changed a decision.

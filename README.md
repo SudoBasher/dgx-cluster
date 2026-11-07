@@ -31,7 +31,7 @@ ssh -F .ssh/config spark2
 | Interconnect latency | 1.66 µs |
 | NCCL all-reduce | 3.0 GB/s, limited by the absence of GPUDirect RDMA |
 | Combined memory | 242 GiB unified across the pair |
-| Serving | Qwen3.8-27B FP8, one replica per node, 4-8 tok/s |
+| Serving | spark1: Qwen3.8-27B FP8, 8.4 tok/s. spark2: Qwen3.6-35B-A3B NVFP4 (MoE), 79 tok/s |
 | Observability | Thanos + Loki + Grafana in us-west-2, 18 scrape targets up, 12-month retention |
 | Access | NetBird VPN, all peer links direct P2P; nothing public except the VPN control plane |
 

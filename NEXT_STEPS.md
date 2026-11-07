@@ -72,20 +72,15 @@ simultaneous requests should be well above the single-stream figure.
 
 ## 4. Repoint spark2 at a second model
 
-The stated plan. `ansible/host_vars/spark2.yml` is the only file that needs to
-change; see `ansible/README.md`. Candidates evaluated against this hardware are
-in `FINDINGS.md`. Note that `ms_weights_peer` can stay set: it falls back to a
-Hugging Face download automatically once spark1 no longer has the model.
-
-Once the nodes serve different models, treat them as separate endpoints rather
-than replicas.
+Done 2026-11-06: spark2 serves `nvidia/Qwen3.6-35B-A3B-NVFP4` as
+`qwen3.6-35b-a3b` (`RUNBOOK.md` section 20). The nodes are now separate
+endpoints rather than replicas: spark1 for depth, spark2 for speed.
 
 ## 5. Connect AnythingLLM
 
-Generic OpenAI provider, base URL `http://spark-a01a.tommyslab:8000/v1`, model
-`qwen3.8-27b`. Set the token context window well below the 262144 the server
-advertises, or it will build prompts large enough to make prefill feel like a
-hang. Run it on the workstation, not on a Spark.
+Done. AnythingLLM runs on both Sparks, each pre-wired to its own vLLM with
+the token limit at 32768 (`ansible/README.md`, AnythingLLM). spark2 added
+2026-11-06, `RUNBOOK.md` section 20.
 
 ## 7. Re-test GPUDirect RDMA after any driver update
 

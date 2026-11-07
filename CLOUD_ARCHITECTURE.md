@@ -31,7 +31,7 @@ flowchart LR
   subgraph LAB["LAB &nbsp;—&nbsp; tommyslab &nbsp;10.255.128.0/20"]
     direction TB
     S1["<b>spark1</b> · spark-a01a<br/>GB10 · 121 GiB unified<br/>vLLM · AnythingLLM"]
-    S2["<b>spark2</b> · spark-9d80<br/>GB10 · 121 GiB unified<br/>vLLM"]
+    S2["<b>spark2</b> · spark-9d80<br/>GB10 · 121 GiB unified<br/>vLLM · AnythingLLM"]
     S1 <-->|"200GbE ConnectX-7<br/>1.66 µs · one cable"| S2
   end
 

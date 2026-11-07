@@ -31,7 +31,7 @@ serving; everything node-specific lives in those two files.
 | Node | Model | Served as | Port | Front end |
 |---|---|---|---|---|
 | spark1 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 | AnythingLLM on 3001 |
-| spark2 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 | — |
+| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | AnythingLLM on 3001 |
 
 Endpoints are OpenAI-compatible:
 
@@ -146,9 +146,20 @@ curl -s http://spark-a01a.tommyslab:8000/v1/chat/completions \
 
 ## AnythingLLM
 
-Runs on spark1 only, at http://spark-a01a.tommyslab:3001. Enabled with
-`allm_enabled: true` in `host_vars/spark1.yml`; set `allm_enabled: false` and
-re-run to remove it.
+Runs on both nodes, each one talking only to its own vLLM:
+
+| Node | URL | Model |
+|---|---|---|
+| spark1 | http://spark-a01a.tommyslab:3001 | `qwen3.8-27b` |
+| spark2 | http://spark-9d80.tommyslab:3001 | `qwen3.6-35b-a3b` |
+
+The two instances are independent: separate accounts, workspaces and documents.
+Enabled with `allm_enabled: true` in each node's `host_vars`; set
+`allm_enabled: false` and re-run to remove it.
+
+No key needs to be entered by hand. The role takes the `anythingllm` entry from
+`ms_api_keys` in `.secrets/vllm-keys.yml` and writes it into the container's
+environment as `GENERIC_OPEN_AI_API_KEY`.
 
 It reaches vLLM on the same host through `host.docker.internal`, mapped to the
 host gateway in the unit, so no IP is hardcoded and the front end survives a
@@ -159,6 +170,13 @@ The LLM provider is pre-seeded from `host_vars`: `allm_llm_model` must match
 `allm_llm_token_limit` defaults to 32768 rather than the model's real 262144,
 because AnythingLLM uses it to decide how much history and retrieved context to
 pack into a prompt, and a 262k prefill on this hardware looks like a hang.
+
+The output cap is a separate setting. AnythingLLM's Generic OpenAI provider
+caps every reply at 1024 tokens unless `GENERIC_OPEN_AI_MAX_TOKENS` is set,
+on both the chat and agent paths. Qwen reasons before it answers, so 1024
+tokens go on thinking and the reply stops mid-sentence with no answer. Set it
+through `allm_extra_env`; spark2 uses 81920, Qwen's figure for complex tasks.
+spark1 is still on the 1024 default.
 
 Some AnythingLLM versions ignore `LLM_PROVIDER` from the environment and expect
 it set through the UI. If the provider comes up unset on first load, configure
@@ -172,7 +190,7 @@ every session and API key.
 
 Embeddings use the built-in native embedder and LanceDB, both in-process, so
 there is no extra service to run. They do consume host memory alongside vLLM,
-which has already reserved 80% of the unified pool.
+which reserves 80% of the unified pool on spark1 and 50% on spark2.
 
 ## Adding a load balancer
 

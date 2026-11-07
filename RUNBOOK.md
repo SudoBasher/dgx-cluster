@@ -512,12 +512,13 @@ NCCL collectives across the interconnect manage 3.0 GB/s and tensor parallel
 would make prefill roughly 200× slower than keeping the model local (section 9b
 and `FINDINGS.md`).
 
-Current assignment, both nodes identical for now:
+Current assignment. The nodes serve different models and are separate
+endpoints, not replicas (spark2 repointed 2026-11-06, section 20):
 
-| Node | Model | Served as | Port |
-|---|---|---|---|
-| spark1 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 |
-| spark2 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 |
+| Node | Model | Served as | Port | vLLM |
+|---|---|---|---|---|
+| spark1 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 | `:latest` (0.28.0 as running) |
+| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (was `v0.28.0` until 2026-11-07) |
 
 From the `ansible/` directory:
 
@@ -760,7 +761,7 @@ Expected results, as measured on 2026-09-03:
 | Peers connected | 2/3 from each Spark, obs-read Idle until queried |
 | `sum(up)` | 18 |
 | Loki `service_name` | `vllm.service`, `anythingllm.service`, `docker.service`, `otelcol-contrib.service`, `init.scope`, `unknown_service` |
-| `/v1/models` | `qwen3.8-27b` from both nodes |
+| `/v1/models` | `qwen3.8-27b` from spark1, `qwen3.6-35b-a3b` from spark2 (since 2026-11-06) |
 | Grafana health | `ok`, version 13.0.8 |
 
 `unknown_service` in that list is expected, not a fault: kernel messages carry
@@ -1051,5 +1052,276 @@ curl -s -u '<login>:<password>' http://100.123.229.83:3000/api/user
 ```
 
 200 with that user's own object back is the only real confirmation.
+
+---
+
+## 20. spark2 on Qwen3.6-35B-A3B NVFP4 `[spark2]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-20261106.log
+```
+
+Repointed 2026-11-06. spark2 stops being a replica of spark1 and becomes the
+fast node: a mixture-of-experts model with ~3B parameters active per token,
+quantised to 4-bit. spark1 keeps the dense Qwen3.8-27B for work that needs the
+deeper model.
+
+| | spark1 | spark2 |
+|---|---|---|
+| Model | `Qwen/Qwen3.8-27B-FP8` | `nvidia/Qwen3.6-35B-A3B-NVFP4` |
+| Served as | `qwen3.8-27b` | `qwen3.6-35b-a3b` |
+| Decode, single stream | 8.4 tok/s | 77.1 tok/s |
+| Time to first token | 0.14 s | 0.07 s |
+| Weights on disk | 29 GB | 22 GB |
+| Cold start | ~7 min | 3 min 28 s |
+
+*Table 20.1. Both nodes measured 2026-11-06, same prompt, 512 output tokens
+with `ignore_eos`, thinking off, one warm-up then three runs each. Runs varied
+by less than 0.2 tok/s.*
+
+Decode on GB10 is bound by memory bandwidth, so speed tracks the bytes read per
+token. The 27B reads all ~28 GB of its weights for every token; the MoE reads
+only the experts the router picks. That ratio, not any serving flag, is the
+9.2x.
+
+### What changed
+
+Everything is in `ansible/host_vars/spark2.yml`; the role is untouched.
+
+- `ms_model_repo` and `ms_served_name` point at the NVFP4 checkpoint.
+- `ms_image` was pinned to `vllm/vllm-openai:v0.28.0` (moved to `v0.33.0` on
+  2026-11-07, see below). `:latest` had moved to
+  0.33.0, and 0.28.0 is both what the vLLM GB10 recipe measured on and the
+  minimum at which FlashInfer selects its XQA decode kernel on SM12x for NVFP4.
+  The tag resolved to the image already on disk (`61fc8a896b0a`), so nothing
+  new was pulled.
+- `ms_gpu_memory_utilization: 0.5`, the recipe's cap for Spark. vLLM holds
+  20.4 GiB of weights plus a 1.4M-token KV cache (5.4 concurrent requests at
+  full 262144 context); the host keeps ~71 GiB.
+- `ms_extra_args` carries the recipe's serving flags: fp8 KV cache, FlashInfer
+  attention, Marlin MoE, `--max-num-seqs 8`, chunked prefill, async
+  scheduling, prefix caching, fastsafetensors loading. Each was checked
+  against `vllm serve --help=all` in the pinned image before deploying (this
+  needs `--gpus all`; without a GPU the parser itself crashes).
+- `ms_weights_peer` is removed. spark1 doesn't hold this model, so the role
+  downloads from Hugging Face directly.
+
+### Gap to the recipe
+
+The recipe reports 97.7 tok/s on the same hardware and vLLM version; this
+deployment does 77.1. The likely difference is `VLLM_USE_RUST_FRONTEND=1`,
+which the recipe sets and the role can't, because `vllm.service.j2` has no
+environment passthrough. Untested.
+
+### Verify
+
+```bash
+ansible spark2 -m shell -a 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health'   # 200
+```
+
+The play's own last task prints `spark2 serving qwen3.6-35b-a3b on port 8000`
+after an authenticated `/v1/models`.
+
+### Roll back
+
+Revert `host_vars/spark2.yml` and re-run the same command. The Qwen3.8-27B
+weights are still in `/opt/dgx-models`, so a rollback is a restart, not a
+download.
+
+### AnythingLLM on spark2
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-allm-20261106.log
+```
+
+Two lines in `host_vars/spark2.yml`, the same role spark1 uses:
+
+```yaml
+allm_enabled: true
+allm_llm_model: qwen3.6-35b-a3b
+```
+
+No key is entered by hand. The role takes the `anythingllm` entry from
+`.secrets/vllm-keys.yml` and writes it into the container's environment, so
+spark2's front end authenticates to spark2's vLLM with its own revocable
+credential. vLLM was not restarted.
+
+Verify that the container itself can reach and authenticate to vLLM, which is
+the link the browser check doesn't cover:
+
+```bash
+ansible spark2 -b -m shell -a "docker exec anythingllm node -e 'fetch(process.env.GENERIC_OPEN_AI_BASE_PATH+\"/models\",{headers:{Authorization:\"Bearer \"+process.env.GENERIC_OPEN_AI_API_KEY}}).then(async r=>console.log(r.status,(await r.json()).data.map(m=>m.id)))'"
+# 200 [ 'qwen3.6-35b-a3b' ]
+curl -s -o /dev/null -w '%{http_code}\n' http://100.123.5.235:3001/api/ping   # 200, over the VPN
+```
+
+First visit to http://100.123.5.235:3001 runs AnythingLLM's own instance
+setup. Accounts, workspaces and documents are separate from spark1's.
+
+### Known issue: one engine crash, not reproduced
+
+2026-11-06 16:09:34, on the first AnythingLLM traffic: vLLM's engine died with
+`torch.AcceleratorError: CUDA error: unknown error` inside the hybrid model's
+linear-attention layer (`mamba/gdn/qwen_gdn_linear_attn.py`,
+`_forward_core_fused_norm`) while prefilling a 990-token prompt. systemd
+restarted it (`NRestarts=1`) and it served again at 16:11:42. AnythingLLM
+reports the gap as "The agent model failed to respond: Connection error".
+
+What it was not:
+
+- Not a driver or hardware fault: no NVRM/Xid line in `journalctl -k`.
+- Not prompt length: prompts of 53 to 4,269 tokens all succeeded afterwards.
+- Not a prefix-cache hit: the dump shows `hits=0` for that request.
+- Not the agent request shape: seven streamed requests with four tools,
+  thinking on, temperature 1.0 and concurrent pairs, all succeeded.
+
+The crash dump is in the journal:
+
+```bash
+ansible spark2 -b -m shell -a "journalctl -u vllm --since '2026-11-06 16:09:30' --until '2026-11-06 16:09:40' -o cat"
+```
+
+If it recurs, `systemctl show vllm -p NRestarts` counts it. The flags the
+recipe itself calls experimental on hybrid models, `--enable-prefix-caching`
+and `--async-scheduling`, are the first suspects to drop from `ms_extra_args`;
+moving to a newer vLLM image is the second.
+
+### Replies cut off mid-thought: AnythingLLM's 1024-token cap
+
+Symptom: a reply that is all reasoning and stops mid-sentence, with no answer.
+Not a crash. vLLM counts it as `finished_reason="length"` in
+`vllm:request_success_total`, and `NRestarts` doesn't move.
+
+AnythingLLM's Generic OpenAI provider sends `max_tokens=1024` unless
+`GENERIC_OPEN_AI_MAX_TOKENS` is set
+(`/app/server/utils/AiProviders/genericOpenAi/index.js:41` and the agent
+provider beside it). Fixed on spark2 in `host_vars/spark2.yml`:
+
+```yaml
+allm_extra_env:
+  GENERIC_OPEN_AI_MAX_TOKENS: 16384
+```
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-allm-maxtokens-20261106.log
+ansible spark2 -b -m shell -a 'docker exec anythingllm sh -c "echo \$GENERIC_OPEN_AI_MAX_TOKENS"'   # 16384
+```
+
+Raised to 81920 on 2026-11-07, see "vLLM 0.33.0 and an 81920 output cap".
+
+Only the AnythingLLM container restarts; vLLM is untouched.
+
+A thread that holds a failed turn, like the ones from the 16:09 crash, keeps an
+empty assistant message in its history. The model then spends its reasoning
+puzzling over the gap. Start a new thread rather than continuing one of those.
+
+### presence_penalty as a server default
+
+Qwen's card recommends `presence_penalty=1.5` in thinking mode to stop endless
+repetition, which matters more as the output cap rises. AnythingLLM sends only
+`temperature`, and vLLM's own defaults come from the model's
+`generation_config.json`, which doesn't set it. So it goes on the server, in
+`ms_extra_args`:
+
+```yaml
+- "'--override-generation-config={\"presence_penalty\":1.5}'"
+```
+
+A client that sends its own `presence_penalty` still wins. This restarts vLLM.
+
+On the pinned v0.28.0 the flag is accepted but has no effect. vLLM merges the
+override into the generation config, then copies only six keys into the
+default sampling parameters (`vllm/config/model.py`, `get_diff_sampling_param`):
+`repetition_penalty`, `temperature`, `top_k`, `top_p`, `min_p`,
+`max_new_tokens`. The startup line that reports the defaults is the check:
+
+```bash
+ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
+# v0.28.0: {'temperature': 1.0, 'top_k': 20, 'top_p': 0.95}   <- no presence_penalty
+```
+
+v0.33.0 adds `presence_penalty` and `frequency_penalty` to that list, so the
+flag starts working once `ms_image` moves past 0.28.
+
+### vLLM 0.33.0 and an 81920 output cap
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-vllm033-20261107.log
+```
+
+2026-11-07. Two changes in `host_vars/spark2.yml`:
+
+| Setting | Before | After |
+|---|---|---|
+| `ms_image` | `vllm/vllm-openai:v0.28.0` | `vllm/vllm-openai:v0.33.0` |
+| `allm_extra_env.GENERIC_OPEN_AI_MAX_TOKENS` | 16384 | 81920 |
+
+The upgrade is what makes `presence_penalty` work. 81920 is Qwen's output
+length for "highly complex problems". Prompt plus output must fit in the
+262144-token window or vLLM answers 400 (tested: 229376 accepted, 262130
+rejected), so this leaves 180k for the prompt against AnythingLLM's 32768
+prompt budget.
+
+Before the switch, every flag in the unit was checked against
+`vllm serve --help=all` in the new image, plus the `marlin` MoE backend,
+the `qwen3_xml` tool parser, and the `qwen3` reasoning parser (registered in
+`vllm/reasoning/__init__.py` rather than listed in help). `v0.33.0` and
+`:latest` were the same image (`d825baf9ce4b`) on the day.
+
+Verify:
+
+```bash
+ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
+# {'presence_penalty': 1.5, 'temperature': 1.0, 'top_k': 20, 'top_p': 0.95}
+ansible spark2 -b -m shell -a 'docker exec anythingllm sh -c "echo \$GENERIC_OPEN_AI_MAX_TOKENS"'   # 81920
+```
+
+| | v0.28.0 | v0.33.0 |
+|---|---|---|
+| Decode, single stream | 77.1 tok/s | 78.9 tok/s |
+| Time to first token | 0.07 s | 0.06 s |
+| Startup | 3 min 28 s | ~2 min 10 s |
+| Weight load | 18.7 s | 6.9 s |
+
+*Table 20.2. Same harness as table 20.1, presence_penalty 1.5. Three runs of
+78.9 each; an explicit presence_penalty 0 gave the same 79.0, so the penalty
+costs no decode speed.*
+
+The first benchmark after the restart read 58.3 tok/s. That wasn't
+the new version: AnythingLLM was generating at the same time (`Running: 2 reqs`
+in the engine log) and the two streams split the decode. Check for concurrent
+traffic before trusting a single-stream number:
+
+```bash
+ansible spark2 -b -m shell -a "journalctl -u vllm --since '-15min' -o cat | grep -E 'Running: [2-9] reqs'"
+```
+
+The same log gives a first look at concurrency: two streams together ran at
+103-119 tok/s, against 79 for one.
+
+Roll back by setting `ms_image` to `v0.28.0`, still on disk. The penalty goes
+inert again with it.
+
+The first attempt left out the outer single quotes and took spark2 down for
+14 minutes, 17:20 to 17:34. systemd unquotes ExecStart words, double quotes included
+even in the middle of a word, so vLLM received `{presence_penalty:1.5}`,
+exited on the parse error, and systemd restarted it 19 times while the
+playbook sat in its 15-minute health wait:
+
+```
+vllm serve: error: argument --override-generation-config: Value {presence_penalty:1.5} cannot be converted to <function loads ...>
+```
+
+Before redeploying, the quoting was checked with a throwaway unit rather than
+by trial on vLLM:
+
+```bash
+ansible spark2 -b -m shell -a "printf '%s\n' '[Service]' 'Type=oneshot' 'ExecStart=/bin/echo ARG '\"'\"'--override-generation-config={\"presence_penalty\":1.5}'\"'\"'' > /run/systemd/system/quote-test.service && systemctl daemon-reload && systemctl start quote-test && journalctl -u quote-test -o cat | grep ARG | tail -1; rm -f /run/systemd/system/quote-test.service; systemctl daemon-reload"
+# ARG --override-generation-config={"presence_penalty":1.5}
+```
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-presence-penalty-20261106.log
+```
 
 ---

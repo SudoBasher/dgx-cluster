@@ -1,31 +1,98 @@
 ---
-# spark2 (spark-9d80) — Qwen3.8-27B replica
+# spark2 (spark-9d80) — Qwen3.6-35B-A3B, NVFP4
 #
-# Identical to spark1 today. This file is the seam: to run something else here
-# later, change ms_model_repo and ms_served_name and re-run with
-# `--limit spark2`. spark1 is untouched.
+# The fast node. A mixture-of-experts model with ~3B parameters active per
+# token, against spark1's dense 27B. Decode on GB10 is bound by memory
+# bandwidth (~273 GB/s), so reading ~3B 4-bit weights per token instead of
+# ~28 GB is what buys the speed: ~98 tok/s here vs ~8 tok/s on spark1.
+# Weaker than spark1 on long reasoning chains; use spark1 when that matters.
 #
-# To free the node entirely instead, set ms_enabled: false. That stops the
-# service, disables it and removes the unit, leaving the weight cache in place.
+# The two nodes share nothing, so this file changes spark2 alone. Re-run with
+# `--limit spark2`. To free the node instead, set ms_enabled: false; that stops
+# the service, disables it and removes the unit, leaving the weight cache.
 
+## Model
 ms_enabled: true
-ms_model_repo: Qwen/Qwen3.8-27B-FP8
-ms_served_name: qwen3.8-27b
+ms_model_repo: nvidia/Qwen3.6-35B-A3B-NVFP4
+ms_served_name: qwen3.6-35b-a3b
 ms_max_model_len: 262144
 ms_reasoning_parser: qwen3
 
-# Agent front ends (AnythingLLM among them) send tool_choice="auto", which vLLM
-# rejects with a 400 unless both of these are set.
+## Image
+# Pinned rather than :latest, so an upstream release never changes this node
+# unannounced. 0.33.0 since 2026-11-07, for presence_penalty: 0.28.0 dropped
+# it from --override-generation-config (see Serving flags). The vLLM recipe
+# measured on 0.28.0, and NVFP4 needs at least 0.28.0 for FlashInfer's XQA
+# decode kernel on SM12x. Every flag below was checked against
+# `vllm serve --help=all` in this image before the switch. Rolling back is
+# this line to v0.28.0, which is still on disk.
+ms_image: vllm/vllm-openai:v0.33.0
+
+## Memory
+# The vLLM GB10 recipe caps this at 0.5 because the pool is shared with the
+# host. ~60 GiB covers ~20 GB of weights plus the KV cache at full context.
+ms_gpu_memory_utilization: 0.5
+
+## Tool calling
+# Agent front ends send tool_choice="auto", which vLLM rejects with a 400
+# unless both of these are set. qwen3_xml and the recipe's qwen3_coder are
+# aliases for the same parser.
 ms_enable_auto_tool_choice: true
 ms_tool_call_parser: qwen3_xml
 
-# Pull the 29 GB of weights from spark1 across the 200GbE link rather than
-# from Hugging Face. Falls back to a normal download if spark1 does not have
-# the model cached, which is what happens when this node is repointed at
-# something spark1 does not run.
-ms_weights_peer: spark1-ic
+## Serving flags
+# From https://recipes.vllm.ai/Qwen/Qwen3.6-35B-A3B, GB10 + NVFP4 profile.
+# marlin runs the NVFP4 MoE layers; the FP8 Triton MoE path that lacks a tuned
+# config on SM12x is not used. fastsafetensors loads weights straight to GPU.
+ms_extra_args:
+  - --kv-cache-dtype fp8
+  - --attention-backend flashinfer
+  - --moe-backend marlin
+  - --max-num-seqs 8
+  - --max-num-batched-tokens 8192
+  - --enable-chunked-prefill
+  - --async-scheduling
+  - --enable-prefix-caching
+  - --load-format fastsafetensors
+  # Qwen's thinking-mode recommendation, applied as a server default because
+  # AnythingLLM sends only temperature. Curbs the endless repetition a long
+  # output cap would otherwise let run. A request that sets presence_penalty
+  # itself still wins.
+  #
+  # Needs vLLM 0.33 or later. 0.28.0's get_diff_sampling_param copied only
+  # repetition_penalty, temperature, top_k, top_p, min_p and max_new_tokens
+  # out of the merged config and dropped presence_penalty without a warning.
+  #
+  # The outer single quotes are for systemd, which unquotes ExecStart words
+  # and would otherwise strip the JSON's double quotes even mid-word, leaving
+  # vLLM {presence_penalty:1.5} and a crash loop (2026-11-06, 19 restarts).
+  - "'--override-generation-config={\"presence_penalty\":1.5}'"
 
-# --- VPN -------------------------------------------------------------------
+## Weights
+# No ms_weights_peer: spark1 does not hold this model, so the role downloads
+# it from Hugging Face (~20 GB). The Qwen3.8-27B cache stays on disk, which
+# makes rolling back a host_vars revert and no download.
+
+## AnythingLLM
+# Front end on port 3001, same role as spark1's. Reaches vLLM on this host via
+# host.docker.internal and authenticates with the "anythingllm" entry from
+# .secrets/vllm-keys.yml, which the role picks up on its own.
+allm_enabled: true
+allm_llm_model: qwen3.6-35b-a3b
+
+# Output cap per reply. AnythingLLM's Generic OpenAI provider defaults to 1024
+# when this is unset, on both the chat and agent paths. Qwen reasons before it
+# answers, so 1024 is spent on thinking and the reply is cut off mid-sentence
+# with no answer at all.
+#
+# 81920 is Qwen's figure for "highly complex problems". Prompt plus output must
+# fit in ms_max_model_len (262144) or vLLM returns 400, so this leaves 180k for
+# the prompt against AnythingLLM's 32768 allm_llm_token_limit. Worst case ~18
+# min at 77 tok/s; presence_penalty is what keeps a long reply from looping.
+allm_extra_env:
+  GENERIC_OPEN_AI_MAX_TOKENS: 81920
+
+## VPN
 nbc_setup_key: "{{ nbc_key_spark }}"   # spark-node -> sparks
 nbc_routes:
   - "10.255.128.0/20"     # lab VLAN, for hosts that cannot run a client

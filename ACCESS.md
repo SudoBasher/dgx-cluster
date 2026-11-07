@@ -27,7 +27,7 @@ a node's LAN address does, which is why they are the preferred way in.
 |---|---|---|---|
 | humans | `some ips` | workstation | admins |
 | spark1 (`spark-a01a`) | `100.123.96.149` | GPU node, vLLM + AnythingLLM | sparks |
-| spark2 (`spark-9d80`) | `100.123.5.235` | GPU node, vLLM | sparks |
+| spark2 (`spark-9d80`) | `100.123.5.235` | GPU node, vLLM + AnythingLLM | sparks |
 | obs-write | `100.123.158.113` | Thanos receive/compact, Loki | aws-infra |
 | obs-read | `100.123.229.83` | Thanos query/store, Grafana | aws-infra, obs-read |
 | netbird-cp | — | control plane, reached by DNS | — |
@@ -72,7 +72,8 @@ playbooks through `vars_files`:
 |---|---|---|
 | Grafana | http://100.123.229.83:3000 | metrics and log exploration; login `admin`, password in `.secrets/grafana.yml` |
 | NetBird dashboard | https://vpn.isc-spectro-sbx.click | the only public endpoint |
-| AnythingLLM | http://100.123.96.149:3001 | spark1 only |
+| AnythingLLM (spark1) | http://100.123.96.149:3001 | uses `qwen3.8-27b`, slower and deeper |
+| AnythingLLM (spark2) | http://100.123.5.235:3001 | uses `qwen3.6-35b-a3b`, ~9x faster |
 | vLLM (spark1) | http://100.123.96.149:8000/v1 | OpenAI-compatible; requires a key |
 | vLLM (spark2) | http://100.123.5.235:8000/v1 | OpenAI-compatible; requires a key |
 | Thanos Query | http://100.123.229.83:19192 | raw PromQL, debugging |
