@@ -1,0 +1,76 @@
+---
+# Bifrost LLM gateway. Off by default; enable per node in host_vars.
+# One OpenAI-compatible endpoint in front of the local vLLM, with per-client
+# virtual keys so token use and latency can be attributed in metrics and logs.
+
+## On/off
+# Set false to stop the service, disable it and remove the units. The data
+# directory (config.db, logs.db) is left in place.
+bifrost_enabled: false
+
+## Image
+# Pinned. v2.1.0 fixed a critical unauthenticated RCE (GHSA-86gf-xh3g-rvxq)
+# caused by admin auth being off by default; this role always turns it on.
+bifrost_image: maximhq/bifrost:v2.5.0
+bifrost_service_name: bifrost
+bifrost_container_name: bifrost
+
+## Port
+# The container is told to listen on the same port it is published on, so the
+# DOCKER-USER rule can match it without colliding with other containers that
+# listen on Bifrost's default 8080 internally (Open WebUI does).
+bifrost_port: 4000
+
+## Host paths
+# The image runs as UID 1000 and writes config.db and logs.db under /app/data.
+bifrost_base_dir: /opt/bifrost
+bifrost_data_dir: /opt/bifrost/data
+bifrost_uid: 1000
+bifrost_gid: 1000
+
+## Backend: the vLLM on this host
+# host.docker.internal is mapped to the host gateway in the unit.
+bifrost_vllm_url: "http://host.docker.internal:8000"
+bifrost_vllm_model: ""             # must match the vLLM --served-model-name
+# Picks the "bifrost" entry out of ms_api_keys, so the gateway has its own
+# revocable credential to vLLM.
+bifrost_vllm_key: >-
+  {{ (ms_api_keys | default([]) | selectattr('name','equalto','bifrost')
+      | map(attribute='key') | list | first) | default('', true) }}
+# Long generations: at ~80 tok/s an 81920-token reply takes ~17 minutes, so
+# the upstream timeout must outlast it for non-streaming requests.
+bifrost_vllm_timeout_seconds: 1800
+# Bifrost's SSRF guard refuses provider connections to RFC 1918 addresses by
+# default, and host.docker.internal resolves to the Docker gateway (172.17.0.1),
+# so without this every request fails with 502 "connection to private IP
+# 172.17.0.1 is not allowed". Scoped to the vLLM provider, whose URL is fixed
+# here; loopback would be allowed regardless, but needs host networking.
+bifrost_vllm_allow_private_network: true
+
+## Logging
+# Bifrost stores request and response bodies in logs.db unless this is set.
+# Off by default here: prompts from coding tools carry source code and,
+# sometimes, secrets. Token counts, latency and cost are logged either way.
+bifrost_disable_content_logging: true
+
+## Metrics
+# On the open-source build /metrics needs the admin's Basic auth once
+# dashboard auth is on. Whitelisting it matches vLLM's own /metrics, which is
+# also unauthenticated, and keeps the admin password out of the scraper's
+# config. The firewall below still limits who can reach the port.
+bifrost_metrics_unauthenticated: true
+
+## Network allowlist (DOCKER-USER), same model as vLLM's
+bifrost_restrict_network: true
+bifrost_allowed_cidrs:
+  - 127.0.0.0/8
+  - 172.16.0.0/12          # Docker bridge networks
+  - 100.64.0.0/10          # NetBird overlay
+
+## Credentials, from .secrets/bifrost.yml (loaded by site.yml)
+#   bifrost_admin_username, bifrost_admin_password, bifrost_setup_token,
+#   bifrost_encryption_key, bifrost_virtual_keys: [{id, name, value}]
+
+## Health check after (re)start
+bifrost_wait_for_health: true
+bifrost_health_timeout: 300

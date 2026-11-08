@@ -34,8 +34,9 @@ new evidence.
 Complete as of 2026-09-04. Both nodes require a key on `/v1`, and the published
 port is restricted to the VPN overlay.
 
-Four per-client keys in `.secrets/vllm-keys.yml`, loaded by `site.yml`:
-`admin-tommy`, `claude`, `anythingllm`, `teammate`. Any one can be revoked by
+Five per-client keys in `.secrets/vllm-keys.yml`, loaded by `site.yml`:
+`admin-tommy`, `claude`, `anythingllm`, `openwebui` (added 2026-11-07),
+`teammate`. Any one can be revoked by
 deleting its entry and re-running the playbook.
 
 Two things learned:
@@ -52,6 +53,7 @@ access.
 
 ## 2. Disable thinking by default
 
+Measured on Qwen3.8-27B, retired 2026-11-08; Qwen3.6 reasons the same way.
 Qwen3.8 is a reasoning model and roughly 90% of generated tokens are chain of
 thought the user never sees. "Name three primary colours" spends 54 reasoning
 tokens on an 8-token answer, about seven seconds. This is more noticeable in
@@ -78,9 +80,10 @@ endpoints rather than replicas: spark1 for depth, spark2 for speed.
 
 ## 5. Connect AnythingLLM
 
-Done. AnythingLLM runs on both Sparks, each pre-wired to its own vLLM with
-the token limit at 32768 (`ansible/README.md`, AnythingLLM). spark2 added
-2026-11-06, `RUNBOOK.md` section 20.
+Done, then replaced. Both Sparks now run Open WebUI pre-wired to their own
+vLLM (`ansible/README.md`). AnythingLLM ran on spark1 from 2026-09 and on
+spark2 from 2026-11-06; spark2 switched on 2026-11-07 (`RUNBOOK.md` section
+21) and spark1 on 2026-11-08 (section 22).
 
 ## 7. Re-test GPUDirect RDMA after any driver update
 
@@ -105,9 +108,10 @@ borrowed one before buying.
 8k-token prefill, about 9 seconds at 3.0 GB/s, against 45 ms for pipeline
 parallel. Never raise `ms_tensor_parallel_size` above 1.
 
-**A load balancer in front of both nodes.** Correct only while both run the same
-model, and the plan is for them to diverge. AnythingLLM workspaces can each
-target a different endpoint, which fits better.
+**A load balancer in front of both nodes.** Superseded: Bifrost now fronts
+spark1 (`RUNBOOK.md` section 23). With spark2 due to be wiped it routes to a
+single backend; its value is per-client attribution and one endpoint, not
+balancing.
 
 **bf16 weights.** Capacity-limits the cluster to about 110B parameters and
 doubles memory traffic on hardware where decode is bandwidth-bound. FP8 is the

@@ -21,6 +21,9 @@ tel_enable_node_exporter: true
 # Scrape jobs, per host group. Interval is per job because 1s on
 # node_exporter is worth it and 1s on vLLM perturbs inference.
 tel_scrape_jobs: []
+# Appended to tel_scrape_jobs, for jobs only some hosts in a group need (set in
+# host_vars, where redefining tel_scrape_jobs would replace the group's list).
+tel_extra_scrape_jobs: []
 
 # A lab link that has already changed once mid-project; size the queue for a
 # multi-hour outage rather than the default handful of batches.

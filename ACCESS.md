@@ -26,8 +26,8 @@ a node's LAN address does, which is why they are the preferred way in.
 | Host | Overlay IP | Role | Groups |
 |---|---|---|---|
 | humans | `some ips` | workstation | admins |
-| spark1 (`spark-a01a`) | `100.123.96.149` | GPU node, vLLM + AnythingLLM | sparks |
-| spark2 (`spark-9d80`) | `100.123.5.235` | GPU node, vLLM + AnythingLLM | sparks |
+| spark1 (`spark-a01a`) | `100.123.96.149` | GPU node, vLLM + Open WebUI | sparks |
+| spark2 (`spark-9d80`) | `100.123.5.235` | GPU node, vLLM + Open WebUI; to be wiped | sparks |
 | obs-write | `100.123.158.113` | Thanos receive/compact, Loki | aws-infra |
 | obs-read | `100.123.229.83` | Thanos query/store, Grafana | aws-infra, obs-read |
 | netbird-cp | — | control plane, reached by DNS | — |
@@ -66,14 +66,85 @@ playbooks through `vars_files`:
 | `.secrets/netbird-keys.yml` | per-group setup keys |
 | `.secrets/netbird-token` | NetBird API personal access token |
 
+## Pointing a client at the gateway
+
+Coding tools and other OpenAI-compatible clients should go through Bifrost
+rather than straight to vLLM, so their usage shows up per client in Grafana.
+
+| Setting | Value |
+|---|---|
+| Base URL | `http://100.123.96.149:4000/v1` (over the VPN; the lab LAN is blocked) |
+| Model | `vllm/qwen3.6-35b-a3b` |
+| API key | that client's `bifrost_virtual_keys` value in `.secrets/bifrost.yml`, sent as `Authorization: Bearer` |
+
+*Table: gateway connection settings. `/openai/v1` also works as a base URL,
+but it did not pass `chat_template_kwargs` through in testing; `/v1` did.*
+
+One virtual key per client. To add one, append an entry with a new `id`, a
+`name` and a `value` starting with `sk-bf-` to `bifrost_virtual_keys`, then run
+`ansible-playbook site.yml --limit spark1`. Two exist today:
+`desktop2-opencode` and `spark1-openwebui`.
+
+### opencode (terminal and desktop app)
+
+Tested with opencode 2.2.6 on desktop2. One global file serves both: every
+local opencode client talks to a shared background server, which reads
+`~/.config/opencode/opencode.jsonc`. The key goes in the file itself rather
+than `{env:...}`, because the desktop app, started from the desktop rather
+than a shell, doesn't inherit shell variables.
+
+```bash
+mkdir -p ~/.config/opencode
+VK=$(python3 -c "import yaml;print([k for k in yaml.safe_load(open('.secrets/bifrost.yml'))['bifrost_virtual_keys'] if k['name']=='desktop2-opencode'][0]['value'])")
+cat > ~/.config/opencode/opencode.jsonc <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "bifrost/vllm/qwen3.6-35b-a3b",
+  "providers": {
+    "bifrost": {
+      "name": "Bifrost (spark1)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": { "baseURL": "http://100.123.96.149:4000/v1", "apiKey": "$VK" },
+      "models": {
+        "vllm/qwen3.6-35b-a3b": {
+          "name": "Qwen3.6 35B A3B (spark1)",
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 262144, "output": 81920 }
+        }
+      }
+    }
+  }
+}
+EOF
+chmod 600 ~/.config/opencode/opencode.jsonc
+opencode service restart          # the background server reads config at start
+opencode models | grep bifrost    # bifrost/vllm/qwen3.6-35b-a3b
+```
+
+The provider id must not be `vllm`, `ollama` or `lmstudio`; opencode treats
+those as local runtimes and tries to discover them. A model key containing `/`
+works: the provider id ends at the first slash, so `bifrost/vllm/qwen3.6-35b-a3b`
+is provider `bifrost`, model `vllm/qwen3.6-35b-a3b`. Requests show up in
+Bifrost as `app=OpenCode`, user agent `opencode/latest/2.2.6/cli`.
+
+### LM Studio
+
+Can't be pointed at the gateway. LM Studio's documentation covers it only as a
+local model runner and server (`http://localhost:1234/v1`) and LM Link between
+LM Studio installs. Nothing documents using a remote OpenAI-compatible endpoint
+as its chat backend, and no plugin for it turned up (checked 2026-11-08). Chats
+in LM Studio run on desktop2's own hardware and never reach Bifrost.
+
+
 ## Web interfaces
 
 | Service | URL | Notes |
 |---|---|---|
 | Grafana | http://100.123.229.83:3000 | metrics and log exploration; login `admin`, password in `.secrets/grafana.yml` |
 | NetBird dashboard | https://vpn.isc-spectro-sbx.click | the only public endpoint |
-| AnythingLLM (spark1) | http://100.123.96.149:3001 | uses `qwen3.8-27b`, slower and deeper |
-| AnythingLLM (spark2) | http://100.123.5.235:3001 | uses `qwen3.6-35b-a3b`, ~9x faster |
+| Open WebUI (spark1) | http://100.123.96.149:3001 | uses `qwen3.6-35b-a3b`; first account created is the admin |
+| Open WebUI (spark2) | http://100.123.5.235:3001 | same as spark1; goes away when spark2 is wiped |
+| Bifrost gateway (spark1) | http://100.123.96.149:4000 | OpenAI-compatible at `/v1`; per-client virtual key; dashboard login in `.secrets/bifrost.yml` |
 | vLLM (spark1) | http://100.123.96.149:8000/v1 | OpenAI-compatible; requires a key |
 | vLLM (spark2) | http://100.123.5.235:8000/v1 | OpenAI-compatible; requires a key |
 | Thanos Query | http://100.123.229.83:19192 | raw PromQL, debugging |

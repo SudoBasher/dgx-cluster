@@ -19,7 +19,9 @@ group_vars/all.yml        shared defaults
 host_vars/spark1.yml      what spark1 runs      <- edit these
 host_vars/spark2.yml      what spark2 runs      <- edit these
 roles/model_server/       model-agnostic vLLM role
-roles/anythingllm/        web front end, enabled per node
+roles/anythingllm/        web front end, enabled per node (retired, kept for rollback)
+roles/openwebui/          web front end, enabled per node (both Sparks)
+roles/bifrost/            LLM gateway in front of vLLM, enabled per node (spark1)
 site.yml                  the playbook
 ```
 
@@ -30,8 +32,8 @@ serving; everything node-specific lives in those two files.
 
 | Node | Model | Served as | Port | Front end |
 |---|---|---|---|---|
-| spark1 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 | AnythingLLM on 3001 |
-| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | AnythingLLM on 3001 |
+| spark1 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | Open WebUI on 3001 |
+| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | Open WebUI on 3001; to be wiped |
 
 Endpoints are OpenAI-compatible:
 
@@ -140,22 +142,17 @@ Smoke test:
 
 ```bash
 curl -s http://spark-a01a.tommyslab:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"hello"}],"max_tokens":32}'
+  -H 'Content-Type: application/json' -H "Authorization: Bearer $KEY" \
+  -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hello"}],"max_tokens":32}'
 ```
 
 ## AnythingLLM
 
-Runs on both nodes, each one talking only to its own vLLM:
-
-| Node | URL | Model |
-|---|---|---|
-| spark1 | http://spark-a01a.tommyslab:3001 | `qwen3.8-27b` |
-| spark2 | http://spark-9d80.tommyslab:3001 | `qwen3.6-35b-a3b` |
-
-The two instances are independent: separate accounts, workspaces and documents.
-Enabled with `allm_enabled: true` in each node's `host_vars`; set
-`allm_enabled: false` and re-run to remove it.
+Retired. spark1 ran it until 2026-11-08 and spark2 from 2026-11-06 to
+2026-11-07; both now run Open WebUI (below). The role stays in `site.yml`
+with `allm_enabled: false`, which keeps it torn down and makes it a one-flag
+rollback; the data is still in `/opt/anythingllm` on both nodes. The notes
+below describe how it behaved while it ran.
 
 No key needs to be entered by hand. The role takes the `anythingllm` entry from
 `ms_api_keys` in `.secrets/vllm-keys.yml` and writes it into the container's
@@ -190,7 +187,89 @@ every session and API key.
 
 Embeddings use the built-in native embedder and LanceDB, both in-process, so
 there is no extra service to run. They do consume host memory alongside vLLM,
-which reserves 80% of the unified pool on spark1 and 50% on spark2.
+which reserves 80% of the unified pool on spark1.
+
+## Open WebUI
+
+Runs on spark1 at http://spark-a01a.tommyslab:3001 (since 2026-11-08) and on
+spark2 at http://spark-9d80.tommyslab:3001 (since 2026-11-07, until it is
+wiped). spark1's goes through Bifrost (`http://host.docker.internal:4000/v1`,
+virtual key `spark1-openwebui`, default model `vllm/qwen3.6-35b-a3b`), so its
+chats are counted per client; spark2's talks to its vLLM directly. Same shape as the AnythingLLM role: one container under a
+systemd unit, reaching vLLM on the host through `host.docker.internal`, enabled
+with `owui_enabled: true` and torn down with `owui_enabled: false`. Both roles
+are in `site.yml`, and a disabled one removes itself, so switching a node from
+one to the other is a `host_vars` change.
+
+| Setting | Value | Why |
+|---|---|---|
+| Image | `ghcr.io/open-webui/open-webui:v0.13.0` | Pinned; upstream's `:main` and `:latest` track the main branch, not releases |
+| Port | 3001 → 8080 | Same host port AnythingLLM had, so the URL didn't change |
+| Data | `/opt/openwebui/data` → `/app/backend/data` | SQLite database, uploads, embedding cache |
+| vLLM key | `openwebui` entry in `.secrets/vllm-keys.yml` | Its own revocable credential, shared by both instances |
+| Ollama | `ENABLE_OLLAMA_API=False` | vLLM only |
+
+*Table: Open WebUI role settings. Defaults in `roles/openwebui/defaults/main.yml`.*
+
+The first account created in the browser becomes the admin. Later sign-ups
+land as `pending` until the admin approves them.
+
+`WEBUI_SECRET_KEY` is generated once into `/opt/openwebui/webui_secret_key`
+and passed in. Left unset, the image's `start.sh` writes a fresh key to
+`/app/backend/.webui_secret_key`, which is outside the data volume, so every
+restart of this `--rm` container would log everyone out.
+
+Most settings are seeded, not enforced. Open WebUI keeps the vLLM URL and key,
+sign-up, default models and most admin settings in its database. The
+environment only fills them in on the first launch; after that the database
+wins and editing the role changes nothing. To rotate the vLLM key, change it in
+the admin UI (Settings, Connections) as well as in `.secrets`, or set
+`owui_persistent_config: false` to make the environment win on every start at
+the cost of losing admin-UI changes on restart.
+
+Open WebUI sends no `max_tokens` unless one is set in a model's parameters, so
+the output cap lives in vLLM instead: `max_new_tokens` in spark2's
+`--override-generation-config` (81920), which covers every client that leaves
+`max_tokens` out.
+
+The play checks the link to vLLM from inside the container, using the URL and
+key Open WebUI was actually given, and fails if the default model isn't listed.
+
+## Bifrost
+
+LLM gateway on spark1, port 4000: one OpenAI-compatible endpoint in front of
+the local vLLM, with a virtual key per client so token use and latency can be
+told apart in Grafana. Enabled with `bifrost_enabled: true` and
+`bifrost_vllm_model` in a node's `host_vars`; `bifrost_enabled: false` tears
+it down and keeps `/opt/bifrost/data`.
+
+| Setting | Value | Why |
+|---|---|---|
+| Image | `maximhq/bifrost:v2.5.0` | Pinned; 2.1.0 fixed a critical unauthenticated RCE |
+| Port | 4000, published and listened on | Unique container port, so its firewall rule can't catch Open WebUI's internal 8080 |
+| Dashboard auth | on, admin from `.secrets/bifrost.yml` | Off by default upstream, which is what made that RCE reachable |
+| Inference auth | a virtual key, always | `enforce_auth_on_inference: true` |
+| Backend | vLLM through `host.docker.internal:8000`, `bifrost` key | Its own revocable credential |
+| Private network | `allow_private_network: true` on the vLLM provider | The Docker gateway is a 172.17.x address, which Bifrost's SSRF guard refuses by default |
+| Upstream timeout | 1800 s | An 81920-token reply at ~80 tok/s takes ~17 min |
+| Content logging | off | Prompts from coding tools carry code; counts and latency are still logged |
+| `/metrics` | unauthenticated (`whitelisted_routes`) | Matches vLLM's; keeps the admin password out of the scraper |
+| Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | Same model as vLLM's; the lab LAN is dropped |
+
+*Table: Bifrost role settings. Defaults in `roles/bifrost/defaults/main.yml`.*
+
+Configuration is a `config.json` in the data directory, rendered from
+`host_vars` with every secret as an `env.VAR` reference; the values are only in
+`/opt/bifrost/bifrost.env` (mode 0600). Bifrost writes the file into its SQLite
+config store on startup and keeps dashboard edits to anything the file doesn't
+change.
+
+`site.yml` loads `.secrets/bifrost.yml` for every Spark, so the file must exist
+even on a node without Bifrost.
+
+The play ends with a one-token request through the gateway using the first
+virtual key, which proves the key, the vLLM credential and the routing in one
+go.
 
 ## Adding a load balancer
 

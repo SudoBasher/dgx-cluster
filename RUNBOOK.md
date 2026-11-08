@@ -512,13 +512,14 @@ NCCL collectives across the interconnect manage 3.0 GB/s and tensor parallel
 would make prefill roughly 200× slower than keeping the model local (section 9b
 and `FINDINGS.md`).
 
-Current assignment. The nodes serve different models and are separate
-endpoints, not replicas (spark2 repointed 2026-11-06, section 20):
+Current assignment. Both nodes serve the same model since 2026-11-08
+(section 22); spark2 is due to be wiped, after which spark1 is the only
+serving node:
 
 | Node | Model | Served as | Port | vLLM |
 |---|---|---|---|---|
-| spark1 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 | `:latest` (0.28.0 as running) |
-| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (was `v0.28.0` until 2026-11-07) |
+| spark1 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (Qwen3.8-27B on `:latest` until 2026-11-08) |
+| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (was `v0.28.0` until 2026-11-07); to be wiped |
 
 From the `ansible/` directory:
 
@@ -760,8 +761,8 @@ Expected results, as measured on 2026-09-03:
 |---|---|
 | Peers connected | 2/3 from each Spark, obs-read Idle until queried |
 | `sum(up)` | 18 |
-| Loki `service_name` | `vllm.service`, `anythingllm.service`, `docker.service`, `otelcol-contrib.service`, `init.scope`, `unknown_service` |
-| `/v1/models` | `qwen3.8-27b` from spark1, `qwen3.6-35b-a3b` from spark2 (since 2026-11-06) |
+| Loki `service_name` | `vllm.service`, `openwebui.service` (both Sparks since 2026-11-08; `anythingllm.service` before that), `docker.service`, `otelcol-contrib.service`, `init.scope`, `unknown_service` |
+| `/v1/models` | `qwen3.6-35b-a3b` from both (spark1 since 2026-11-08, spark2 since 2026-11-06) |
 | Grafana health | `ok`, version 13.0.8 |
 
 `unknown_service` in that list is expected, not a fault: kernel messages carry
@@ -1064,7 +1065,8 @@ cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs
 Repointed 2026-11-06. spark2 stops being a replica of spark1 and becomes the
 fast node: a mixture-of-experts model with ~3B parameters active per token,
 quantised to 4-bit. spark1 keeps the dense Qwen3.8-27B for work that needs the
-deeper model.
+deeper model. (Superseded 2026-11-08: spark1 now runs this same setup, section
+22, and spark2 is due to be wiped.)
 
 | | spark1 | spark2 |
 |---|---|---|
@@ -1100,7 +1102,8 @@ Everything is in `ansible/host_vars/spark2.yml`; the role is untouched.
   full 262144 context); the host keeps ~71 GiB.
 - `ms_extra_args` carries the recipe's serving flags: fp8 KV cache, FlashInfer
   attention, Marlin MoE, `--max-num-seqs 8`, chunked prefill, async
-  scheduling, prefix caching, fastsafetensors loading. Each was checked
+  scheduling, prefix caching (turned off 2026-11-08, see the known issue),
+  fastsafetensors loading. Each was checked
   against `vllm serve --help=all` in the pinned image before deploying (this
   needs `--gpus all`; without a GPU the parser itself crashes).
 - `ms_weights_peer` is removed. spark1 doesn't hold this model, so the role
@@ -1185,6 +1188,71 @@ If it recurs, `systemctl show vllm -p NRestarts` counts it. The flags the
 recipe itself calls experimental on hybrid models, `--enable-prefix-caching`
 and `--async-scheduling`, are the first suspects to drop from `ms_extra_args`;
 moving to a newer vLLM image is the second.
+
+It recurred 2026-11-08 00:02:54, now on vLLM 0.33.0, so the version upgrade
+didn't fix it. Same signature: `CUDA error: unknown error` in
+`qwen_gdn_linear_attn.py` (`_forward_core`, via `qwen3_next.py` and
+`qwen3_5.py`), no Xid in the kernel log, one request running. Down 1 min 49 s,
+back at 00:04:43.
+
+| | 2026-11-06 16:09 | 2026-11-08 00:02 |
+|---|---|---|
+| vLLM | 0.28.0 | 0.33.0 |
+| Front end | AnythingLLM | Open WebUI |
+| Prompt tokens | 990 | 7,413 |
+| Served from prefix cache | 0 | 6,336 |
+| Newly prefilled this step | 990 | 1,077 |
+
+*Table 20.3. Both crashes. Each hit the first or second real request from a
+newly deployed front end.*
+
+The second one was a prefix-cache hit (6,336 of 7,413 tokens already
+computed), which points at the experimental hybrid-model prefix caching. The
+first wasn't, so caching may not be the whole story.
+
+Open WebUI shows the outage two ways. The request in flight gets "The server
+had an error while processing your request." (vLLM's 500). Prompts sent while
+vLLM is restarting get "Model '' was not found": Open WebUI can't fetch the
+model list (`Connect call failed ('172.17.0.1', 8000)`), so the chat goes out
+with no model. Both clear once vLLM is back.
+
+#### Crash test and prefix caching off (2026-11-08)
+
+A crash test replayed the shape of the second crash: six rounds of a fresh
+~5k-token conversation, each followed by a ~5.8k-token turn that reuses most
+of it from the cache. Thinking on, streamed, `max_tokens` 300.
+
+| | Requests | Cache hit rate | Engine restarts |
+|---|---|---|---|
+| Prefix caching on | 12 | 32-39% once follow-ups started | 0 |
+| Prefix caching off | 12 | not logged (off) | 0 |
+
+*Table 20.4. The crash didn't reproduce with caching on, so the run after the
+change shows nothing broke, not that the fault is fixed. Only time without a
+recurrence can show that.*
+
+Prefix caching is now off, explicitly, in `host_vars/spark2.yml`:
+
+```yaml
+- --no-enable-prefix-caching
+```
+
+Explicit because omitting `--enable-prefix-caching` leaves vLLM's own default
+in charge. Verify against the engine's config dump, not the unit file:
+
+```bash
+ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep -oE 'enable_prefix_caching=[A-Za-z]+' | tail -1"
+# enable_prefix_caching=False
+```
+
+The cost is a re-prefill of shared prompt text on every turn, about a second
+per 6k tokens at the measured ~6,000 tok/s. If the crash recurs with caching
+off, `--async-scheduling` is next, then reporting it upstream with the dump
+from `dump_input.py`.
+
+The crash-test script lives in this session's scratchpad, not the repo. Its
+pattern is the table above: varied filler text so rounds don't share a prefix,
+then a follow-up that does.
 
 ### Replies cut off mid-thought: AnythingLLM's 1024-token cap
 
@@ -1323,5 +1391,321 @@ ansible spark2 -b -m shell -a "printf '%s\n' '[Service]' 'Type=oneshot' 'ExecSta
 ```bash
 cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-presence-penalty-20261106.log
 ```
+
+---
+
+## 21. spark2 front end: AnythingLLM to Open WebUI `[spark2]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-openwebui-20261107.log
+```
+
+2026-11-07. spark2's browser front end changed from AnythingLLM to Open WebUI
+on the same port, so http://100.123.5.235:3001 still works. spark1 keeps
+AnythingLLM.
+
+| Piece | Change |
+|---|---|
+| `roles/openwebui/` | New role, same shape as `roles/anythingllm/` |
+| `site.yml` | Runs `openwebui` after `anythingllm`, so the old front end frees port 3001 first |
+| `host_vars/spark2.yml` | `allm_enabled: false`, `owui_enabled: true`, default model `qwen3.6-35b-a3b`, name `spark2` |
+| `.secrets/vllm-keys.yml` | New `openwebui` key, so the front end has its own credential |
+| vLLM on spark2 | `max_new_tokens: 81920` added to `--override-generation-config` |
+
+*Table 21.1. What the switch touched. vLLM restarted once, for the new key
+list and the output cap together.*
+
+### Why the output cap moved into vLLM
+
+AnythingLLM sent `max_tokens` itself (81920, from `GENERIC_OPEN_AI_MAX_TOKENS`).
+Open WebUI sends none unless an admin sets one in a model's parameters, and
+without a cap vLLM lets a reply run to whatever the 262144-token window leaves.
+vLLM 0.33's `get_diff_sampling_param` renames a `max_new_tokens` override to
+`max_tokens`, and the chat endpoint uses that default whenever a request omits
+it (`vllm/entrypoints/openai/chat_completion/serving.py:183`). The cap now
+covers every client, not just one front end.
+
+### Facts checked against the image, not just the docs
+
+The Open WebUI docs fetch left several points as summaries, so these were read
+from the v0.13.0 source on spark2:
+
+- `linux/arm64` image published for `v0.13.0`, 1.48 GB.
+- `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` are `;`-separated and fall back
+  to the singular forms (`open_webui/config.py:325-337`).
+- Those two, `ENABLE_OLLAMA_API`, `ENABLE_SIGNUP` and `DEFAULT_MODELS` are in
+  the persistent-config map (`config.py:2934-3214`): seeded from the
+  environment on first launch, then owned by the database.
+- With no `WEBUI_SECRET_KEY`, `start.sh` writes one to
+  `/app/backend/.webui_secret_key`, outside the `/app/backend/data` volume. The
+  role therefore generates one into `/opt/openwebui/webui_secret_key` and
+  passes it in, or every restart would log everyone out.
+- `/health` returns `{'status': True}` unauthenticated (`main.py:3057`).
+
+### Verify
+
+```bash
+curl -s http://100.123.5.235:3001/health                         # {"status":true}
+ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
+# {'presence_penalty': 1.5, 'temperature': 1.0, 'top_k': 20, 'top_p': 0.95, 'max_tokens': 81920}
+ansible spark2 -b -m shell -a "systemctl is-active anythingllm; systemctl --failed --no-legend | wc -l"
+# inactive / 0
+```
+
+The play itself confirms the hop the browser can't see: from inside the
+container it lists vLLM's models with the URL and key Open WebUI was given, and
+fails unless `qwen3.6-35b-a3b` is there.
+
+First run: ok=42, changed=11, failed=0. A second run changes nothing in the
+`openwebui` role; the only remaining `changed` is `model_server`'s image pull,
+which matches "Pulling from" even when the image is already current.
+
+### Two teardown fixes found on the way
+
+Turning AnythingLLM off on spark2 was the first real use of the role's
+teardown path, and it exposed two things, fixed in both front-end roles:
+
+- systemd kept listing `anythingllm` under `systemctl --failed` after the unit
+  file was gone, because stopping the container exits non-zero. Teardown now
+  runs `systemctl reset-failed`.
+- The container-removal task reported `changed` on every run, because
+  `docker rm -f` exits 0 even when there is nothing to remove. It now keys off
+  the output, which names the container only when one was removed.
+
+### Things to know
+
+- The first account created at http://100.123.5.235:3001 becomes the admin.
+  Later sign-ups are `pending` until approved.
+- Connection settings are seeded, not enforced. Rotating the `openwebui` key
+  needs the admin UI (Settings, Connections) as well as `.secrets`, unless
+  `owui_persistent_config: false` is set.
+- AnythingLLM's spark2 data (1.7 MB: accounts, the few threads from
+  2026-11-06) is still in `/opt/anythingllm`. Nothing was migrated; delete it
+  by hand if it's not wanted.
+- spark1 hasn't been redeployed. Its next run will add the `openwebui` key to
+  its key list and pull `vllm/vllm-openai:latest` (0.33.0 by now), since only
+  spark2 pins an image.
+
+Roll back by flipping the two flags in `host_vars/spark2.yml`
+(`allm_enabled: true`, `owui_enabled: false`) and re-running. The AnythingLLM
+data is still in place. Put `GENERIC_OPEN_AI_MAX_TOKENS: 81920` back under
+`allm_extra_env` too: AnythingLLM sends `max_tokens=1024` when it's unset, and
+a value in the request beats vLLM's default.
+
+---
+
+## 22. spark1 takes over Qwen3.6 and Open WebUI `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-qwen36-20261108.log
+```
+
+2026-11-08. spark2 is due to be wiped, so spark1 now runs everything spark2
+had built up in sections 20 and 21, and Qwen3.8-27B is retired.
+
+`host_vars/spark1.yml` was rebuilt from `host_vars/spark2.yml`. Two values
+differ, both on purpose:
+
+| Setting | spark1 | spark2 |
+|---|---|---|
+| `ms_weights_peer` | `spark2-ic` | unset |
+| `owui_name` | `spark1` | `spark2` |
+
+*Table 22.1. The only differences between the two host_vars files, checked by
+loading both as YAML and comparing every key.*
+
+Everything else carries over: the NVFP4 model, vLLM pinned at `v0.33.0`, GPU
+memory at 0.5, the recipe flags, prefix caching off, `presence_penalty` 1.5 and
+`max_new_tokens` 81920 as server defaults, and Open WebUI replacing
+AnythingLLM.
+
+The 22 GB of weights came from spark2 over the interconnect: the peer-sync task
+ran and the Hugging Face download was skipped. The task timestamps in
+`logs/ansible.log` can't give a transfer time, because Ansible's async polling
+skews them. Once spark2 is wiped the same setting falls back to a Hugging Face
+download on a rebuild, so it needs no change.
+
+### Verify
+
+```bash
+curl -s http://100.123.96.149:3001/health                     # {"status":true}
+ansible spark1 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
+# {'presence_penalty': 1.5, 'temperature': 1.0, 'top_k': 20, 'top_p': 0.95, 'max_tokens': 81920}
+ansible spark1 -b -m shell -a "journalctl -u vllm -o cat | grep -oE 'enable_prefix_caching=[A-Za-z]+' | tail -1"
+# enable_prefix_caching=False
+ansible spark1 -b -m shell -a "systemctl is-active anythingllm; systemctl --failed --no-legend | wc -l"
+# inactive / 0
+```
+
+| | spark1, Qwen3.8-27B FP8 (before) | spark1, Qwen3.6-35B-A3B NVFP4 |
+|---|---|---|
+| Decode, single stream | 8.4 tok/s | 80.3 tok/s |
+| Time to first token | 0.14 s | 0.07 s |
+| vLLM | 0.28.0 (`:latest`) | 0.33.0, pinned |
+| Front end | AnythingLLM | Open WebUI |
+
+*Table 22.2. Same harness as tables 20.1 and 20.2: three streamed runs of 512
+tokens, thinking off, no other request in flight (checked for
+`Running: 2 reqs` in the engine log).*
+
+First run: ok=47, changed=12, failed=0.
+
+### Things to know
+
+- Clients that asked spark1 for `qwen3.8-27b` now get a 404 for that model
+  name. spark1 had served nine requests under it since its previous restart.
+- The Qwen3.8-27B weights are still in `/opt/dgx-models` (29 GB), and the old
+  host_vars is in git history, so going back is a revert and a restart with no
+  download. Delete the cache by hand once that's no longer wanted.
+- spark1's AnythingLLM data, 1.2 MB and essentially the empty default
+  database, is still in `/opt/anythingllm`.
+- The first account created at http://100.123.96.149:3001 becomes the admin of
+  spark1's Open WebUI. It's a separate instance from spark2's, with its own
+  accounts and chats.
+- The engine crash from section 20's known issue belongs to this model and
+  configuration, so it moves to spark1 with them. `systemctl show vllm -p
+  NRestarts` on spark1 counts it.
+
+---
+
+## 23. Bifrost gateway `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-bifrost-20261108.log
+cd ansible && ansible-playbook telemetry.yml --limit spark1 --diff 2>&1 | tee ../logs/telemetry-spark1-bifrost-20261108.log
+```
+
+2026-11-08. Bifrost (`maximhq/bifrost:v2.5.0`) on spark1 port 4000: one
+OpenAI-compatible endpoint in front of vLLM, a virtual key per client, and
+per-client token and latency metrics in Thanos. Chosen over LiteLLM, whose
+official images were trojaned on 2026-10-21 (v1.107.0) and which needs
+Postgres for keys and spend tracking.
+
+| Piece | Where |
+|---|---|
+| Role | `roles/bifrost/` (config.json, env file, unit, DOCKER-USER allowlist) |
+| Node settings | `host_vars/spark1.yml`: `bifrost_enabled`, `bifrost_vllm_model`, `tel_extra_scrape_jobs` |
+| Secrets | `.secrets/bifrost.yml` (admin, setup token, encryption key, virtual keys) and a `bifrost` entry in `.secrets/vllm-keys.yml` |
+| Playbook | `site.yml` runs the role after `openwebui` and loads `.secrets/bifrost.yml` |
+| Telemetry | scrape job `bifrost`; journald units now `openwebui` and `bifrost` instead of `anythingllm` |
+
+*Table 23.1. What the gateway added.*
+
+### Security posture
+
+Bifrost's critical RCE (GHSA-86gf-xh3g-rvxq, fixed in 2.1.0) was reachable
+because admin auth is off by default. Here:
+
+- Dashboard and management API need the admin login (401 without it).
+- Every inference request needs a virtual key (401 `virtual_key_required`
+  without one, 401 `access_not_found` with a wrong one).
+- The port is open to loopback, the Docker bridges and the VPN overlay only;
+  from the lab LAN it times out.
+- The encryption key is set from the first start. It can't be changed later
+  without wiping the config store.
+- Prompt and response bodies aren't stored (`disable_content_logging`).
+
+### Problem found on the way: SSRF guard blocks the Docker gateway
+
+The first deploy came up healthy, but every request through it returned:
+
+```
+502 "connection to private IP 172.17.0.1 is not allowed"
+```
+
+Bifrost refuses provider connections to RFC 1918 addresses by default, and
+`host.docker.internal` resolves to the Docker gateway. The v2.5.0 schema
+(`transports/config.schema.json`, `$defs.network_config`) has
+`allow_private_network` for this, set on the vLLM provider only. Host
+networking would also work, since loopback is always allowed, but it would
+bypass the DOCKER-USER allowlist.
+
+### Problem found on the way: telemetry runs depended on GitHub
+
+`telemetry.yml` failed twice: a read timeout, then a truncated package
+("E:read, still have 8 to read but none left"). GitHub's release download was
+returning 504. The role's `apt: deb: <url>` downloads the package before it
+compares versions, so even a config-only run needed GitHub. The role now
+checks the installed version first and skips the download when it already
+matches.
+
+### Verify
+
+Acceptance test from desktop2 over the VPN, 13 of 13:
+
+| Check | Result |
+|---|---|
+| `/health`, no auth | 200 |
+| `/metrics`, no auth | 200, 57+ `bifrost_` series |
+| Inference with no key / wrong key | 401 / 401 |
+| Inference with the virtual key at `/v1`, `/openai/v1`, `/openai` | 200 |
+| `/v1/models` with the virtual key | `vllm/qwen3.6-35b-a3b` |
+| Management API without / with admin auth | 401 / 200 |
+| 3,500-token non-streaming reply | 200 after 56 s, past any 30 s default |
+| Port from the lab LAN | timed out (firewall) |
+| Token metrics | labelled `virtual_key_name="desktop2-opencode"` |
+
+*Table 23.2. Only `/v1` passed `chat_template_kwargs` through to vLLM; the
+`/openai` routes didn't, so `/v1` is the documented base URL.*
+
+In Thanos afterwards: `up{job="bifrost"} = 1` and token counts by
+`virtual_key_name` and `model`. In Loki: `bifrost.service` and
+`openwebui.service` lines.
+
+A second `site.yml` run changed nothing in the role. Restarts were 0 for vLLM,
+Open WebUI and Bifrost, and DOCKER-USER held the five `bifrost-acl` rules.
+
+```bash
+curl -s http://100.123.96.149:4000/health
+ansible spark1 -b -m shell -a "iptables -S DOCKER-USER | grep -c bifrost-acl"   # 5
+```
+
+### Things to know
+
+- The client base URL is `http://100.123.96.149:4000/v1`, the model is
+  `vllm/qwen3.6-35b-a3b`, and the key is that client's virtual key. See
+  `ACCESS.md`, "Pointing a client at the gateway".
+- `bifrost_cost_total` isn't emitted for a self-hosted model, so attribution
+  is in tokens, not dollars.
+- Adding the `bifrost` key restarted spark1's vLLM once.
+- spark2 isn't touched. Its telemetry config still lists `anythingllm` until
+  `telemetry.yml` runs there, which is moot once it's wiped.
+
+### spark1 Open WebUI through Bifrost
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-owui-via-bifrost-20261108.log
+```
+
+spark1's Open WebUI now reaches vLLM through Bifrost rather than directly, so
+its chats are counted alongside every other client. It's all `host_vars` and
+secrets; the role didn't change:
+
+| Setting | Value |
+|---|---|
+| `owui_llm_base_url` | `http://host.docker.internal:4000/v1` |
+| `owui_llm_api_key` | virtual key `spark1-openwebui` (new, in `.secrets/bifrost.yml`) |
+| `owui_default_model` | `vllm/qwen3.6-35b-a3b`, Bifrost's id for the model |
+
+*Table 23.3. Open WebUI's connection, before: `host.docker.internal:8000/v1`
+with the `openwebui` vLLM key.*
+
+`site.yml` now runs `bifrost` straight after `model_server`, ahead of the front
+ends. Open WebUI's link check would otherwise run before Bifrost had loaded the
+new virtual key, and fail.
+
+Open WebUI's database was checked first: `openai.api_base_urls` and
+`ui.default_models` were unset there, so the environment applies and the
+change took effect without touching the admin UI. Its play confirmed the new
+link from inside the container (`vllm/qwen3.6-35b-a3b` listed through
+Bifrost).
+
+### opencode against the gateway
+
+Tested from desktop2 with opencode 2.2.6, using a throwaway project config and
+`--standalone` so the user's own opencode server and sessions weren't touched.
+The model listed as `bifrost/vllm/qwen3.6-35b-a3b`, a one-word request
+returned `pong`, and Bifrost logged it under `desktop2-opencode` with
+`app=OpenCode`. The client config is in `ACCESS.md`.
 
 ---

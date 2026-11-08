@@ -9,6 +9,9 @@
   # vLLM API keys are credentials; kept out of git.
   vars_files:
     - ../.secrets/vllm-keys.yml
+    # Bifrost admin, encryption key and virtual keys. Required by the play
+    # even on nodes without Bifrost; see roles/bifrost/defaults/main.yml.
+    - ../.secrets/bifrost.yml
 
   pre_tasks:
     - name: Verify Docker exposes the nvidia runtime
@@ -86,6 +89,12 @@
 
   roles:
     - role: model_server
-    # Front end. Enabled per node via allm_enabled; runs after the model
-    # server so it has something to talk to on first start.
+    # Gateway in front of the local vLLM; enabled per node via bifrost_enabled.
+    # Before the front ends, which may route through it and check the link.
+    - role: bifrost
+    # Front ends. Each is enabled per node (allm_enabled, owui_enabled) and
+    # runs after the model server so it has something to talk to on first
+    # start. Disabled ones tear themselves down, so a node can switch between
+    # them with a host_vars change.
     - role: anythingllm
+    - role: openwebui

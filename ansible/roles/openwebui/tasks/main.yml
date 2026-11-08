@@ -1,0 +1,168 @@
+---
+## Disabled: tear down cleanly, keep the data directory
+
+- name: Tear down Open WebUI
+  when: not owui_enabled
+  become: true
+  block:
+    - name: Stop and disable the Open WebUI service
+      ansible.builtin.systemd:
+        name: "{{ owui_service_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    # docker rm -f exits 0 whether or not the container existed, and prints
+    # its name only when it removed one. Key changed off the output, not rc,
+    # so a node that never ran it doesn't report a change on every run.
+    - name: Remove any lingering Open WebUI container
+      ansible.builtin.command:
+        cmd: docker rm -f {{ owui_container_name }}
+      register: _owui_rm
+      changed_when: _owui_rm.stdout | length > 0
+      failed_when: false
+
+    - name: Remove the Open WebUI unit file
+      ansible.builtin.file:
+        path: /etc/systemd/system/{{ owui_service_name }}.service
+        state: absent
+      notify: reload systemd for openwebui
+
+    # Stopping the container exits non-zero, so systemd records the unit as
+    # failed and keeps listing it under `systemctl --failed` after the unit
+    # file is gone. Clear that; a no-op when there is nothing to clear.
+    - name: Clear any failed state left by the stop
+      ansible.builtin.command:
+        cmd: systemctl reset-failed {{ owui_service_name }}
+      changed_when: false
+      failed_when: false
+
+## Enabled: deploy
+
+- name: Deploy Open WebUI
+  when: owui_enabled
+  block:
+
+    ## Preconditions
+    - name: Fail if no default model is configured
+      ansible.builtin.assert:
+        that: owui_default_model | length > 0
+        fail_msg: >-
+          owui_default_model is empty. Set it to the vLLM --served-model-name
+          (ms_served_name) so new chats open on a model that exists.
+
+    ## Directories
+    - name: Ensure Open WebUI directories exist
+      become: true
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      loop:
+        - "{{ owui_base_dir }}"
+        - "{{ owui_data_dir }}"
+
+    ## Session secret: generated once and kept
+    # Regenerating it on every run would log every user out.
+    - name: Generate the session secret once
+      become: true
+      ansible.builtin.shell:
+        cmd: umask 077 && openssl rand -hex 32 > {{ owui_base_dir }}/webui_secret_key
+        creates: "{{ owui_base_dir }}/webui_secret_key"
+
+    - name: Read the session secret
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ owui_base_dir }}/webui_secret_key"
+      register: _owui_secret_raw
+
+    - name: Expose the session secret to the template
+      ansible.builtin.set_fact:
+        _owui_secret: "{{ _owui_secret_raw.content | b64decode | trim }}"
+      no_log: true
+
+    ## Image
+    - name: Pull the Open WebUI image
+      ansible.builtin.command:
+        cmd: docker pull {{ owui_image }}
+      register: _owui_pull
+      changed_when: "'Downloaded newer image' in _owui_pull.stdout"
+      # ~1.5 GB on first run.
+      async: 1800
+      poll: 15
+
+    ## Environment file and unit
+    - name: Write the Open WebUI environment file
+      become: true
+      ansible.builtin.template:
+        src: openwebui.env.j2
+        dest: "{{ owui_base_dir }}/openwebui.env"
+        owner: root
+        group: root
+        mode: "0600"
+      register: _owui_env
+      no_log: true
+
+    - name: Install the Open WebUI systemd unit
+      become: true
+      ansible.builtin.template:
+        src: openwebui.service.j2
+        dest: /etc/systemd/system/{{ owui_service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: _owui_unit
+      notify: reload systemd for openwebui
+
+    # The unit must be reloaded before we start it, not at the end of the play.
+    - name: Apply unit changes now
+      ansible.builtin.meta: flush_handlers
+
+    ## Start
+    - name: Enable and start Open WebUI
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ owui_service_name }}"
+        enabled: true
+        state: >-
+          {{ 'restarted'
+             if (_owui_unit.changed or _owui_env.changed)
+             else 'started' }}
+
+    ## Verify the web server
+    # /health needs no auth and returns {"status": true} once the app is up.
+    - name: Wait for Open WebUI to report healthy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ owui_port }}/health"
+        status_code: 200
+      register: _owui_health
+      until: _owui_health.status == 200
+      retries: "{{ (owui_health_timeout | int / 10) | int }}"
+      delay: 10
+      when: owui_wait_for_health
+
+    ## Verify the link to vLLM, from inside the container
+    # The browser check above can't see this hop. Uses the container's own
+    # OPENAI_API_* values, so it proves the key and URL Open WebUI was given.
+    - name: Confirm the container can reach and authenticate to vLLM
+      ansible.builtin.command:
+        cmd: >-
+          docker exec {{ owui_container_name }} python3 -c
+          "import json,os,urllib.request as u;
+          r=u.urlopen(u.Request(os.environ['OPENAI_API_BASE_URLS'].split(';')[0]+'/models',
+          headers={'Authorization':'Bearer '+os.environ['OPENAI_API_KEYS'].split(';')[0]}),timeout=15);
+          print(' '.join(m['id'] for m in json.load(r)['data']))"
+      register: _owui_link
+      changed_when: false
+      failed_when: owui_default_model not in _owui_link.stdout
+      when: owui_wait_for_health
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Open WebUI on {{ inventory_hostname }} at
+          http://{{ ansible_host | default(inventory_hostname) }}:{{ owui_port }},
+          backend {{ owui_llm_base_url }} serving {{ _owui_link.stdout | default('?') }}
+      when: owui_wait_for_health

@@ -36,7 +36,8 @@ an actual change on the node.
 
 ```logql
 {service_name="vllm.service"}
-{service_name="anythingllm.service"} |= "error"
+{service_name="openwebui.service"} |= "ERROR"       # shipped since 2026-11-08 (spark1)
+{service_name="bifrost.service"}                    # gateway, spark1
 {node="spark1"} | json | priority <= 3
 {service_name="ssh.service"} |= "Accepted"          # successful logins, any host
 {service_name="ssh.service"} |= "Failed"            # rejected attempts, any host
@@ -339,12 +340,37 @@ arrive:
 $DGX spark1 'sudo journalctl -u vllm -f -o cat | grep --line-buffered -E "Avg prompt throughput|Avg generation throughput|Added request"'
 ```
 
-### AnythingLLM
+### Open WebUI
 
 ```bash
-$DGX spark1 'sudo journalctl -u anythingllm -f'     # or spark2
-$DGX spark1 'curl -s http://127.0.0.1:3001/api/ping'
+$DGX spark1 'sudo journalctl -u openwebui -f'
+$DGX spark1 'curl -s http://127.0.0.1:3001/health'   # {"status":true}
 ```
+
+Open WebUI's journal only reaches Loki since 2026-11-08. Until then
+`group_vars/sparks.yml` still listed `anythingllm` in `tel_journal_units`, so
+the query above returned nothing for the first day Open WebUI ran.
+
+### Bifrost gateway
+
+```bash
+$DGX spark1 'sudo journalctl -u bifrost -f'
+$DGX spark1 'curl -s http://127.0.0.1:4000/health'   # {"components":{"db_pings":"ok"},"status":"ok"}
+```
+
+Scraped as job `bifrost` every 5 s. Per-client usage, in Thanos or Grafana:
+
+```promql
+sum by (virtual_key_name, model) (increase(bifrost_input_tokens_total[1h]))
+sum by (virtual_key_name, model) (increase(bifrost_output_tokens_total[1h]))
+histogram_quantile(0.95, sum by (le, virtual_key_name) (rate(bifrost_upstream_latency_seconds_bucket[5m])))
+sum by (virtual_key_name, status_code) (rate(bifrost_error_requests_total[5m]))
+```
+
+`bifrost_cost_total` isn't emitted at all for this model (no series), since
+Bifrost has no price for a self-hosted vLLM model. Its own dashboard at http://100.123.96.149:4000 (admin
+login in `.secrets/bifrost.yml`) shows the same counts per request, without
+prompt or response bodies, which are deliberately not stored.
 
 ## Fabric health
 

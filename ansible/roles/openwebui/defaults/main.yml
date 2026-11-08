@@ -1,0 +1,52 @@
+---
+# Open WebUI front end. Off by default; enable per node in host_vars.
+# Talks to the vLLM on the same host through host.docker.internal.
+
+## On/off
+# Set false to stop the service, disable it and remove the unit. The data
+# directory (accounts, chats, uploaded documents) is left in place.
+owui_enabled: false
+
+## Image
+# Pinned to a release tag. Upstream's :main and :latest follow the main branch,
+# not the newest stable release. v0.13.0 is published for linux/arm64.
+owui_image: ghcr.io/open-webui/open-webui:v0.13.0
+owui_port: 3001                    # host port; the container listens on 8080
+owui_service_name: openwebui
+owui_container_name: openwebui
+
+## Host paths
+# The container runs as root and writes the SQLite database, uploads and the
+# embedding cache under /app/backend/data, mounted from owui_data_dir.
+owui_base_dir: /opt/openwebui
+owui_data_dir: /opt/openwebui/data
+
+## Branding and default model
+owui_name: ""                      # WEBUI_NAME; shown as "<name> (Open WebUI)"
+owui_default_model: ""             # must match the vLLM --served-model-name
+
+## LLM connection
+# host.docker.internal is mapped to the host gateway in the unit, so this
+# reaches vLLM without hardcoding an IP.
+owui_llm_base_url: "http://host.docker.internal:8000/v1"
+
+# Picks the "openwebui" entry out of ms_api_keys so the front end has its own
+# revocable credential. Falls back to a placeholder if no keys are configured.
+owui_llm_api_key: >-
+  {{ (ms_api_keys | default([]) | selectattr('name','equalto','openwebui')
+      | map(attribute='key') | list | first) | default('not-required', true) }}
+
+## Persistence of admin settings
+# Open WebUI stores the connection settings above (and sign-up, default models
+# and most admin settings) in its database. The environment seeds them on the
+# first launch only; after that the database wins and changes here are ignored.
+# Setting this false makes the environment win on every start, at the cost of
+# admin-UI changes being lost on restart.
+owui_persistent_config: true
+
+## Anything else, as KEY: value
+owui_extra_env: {}
+
+## Health check after (re)start
+owui_wait_for_health: true
+owui_health_timeout: 600

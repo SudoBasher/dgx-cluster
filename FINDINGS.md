@@ -340,7 +340,8 @@ Measured 6 November 2026 on spark2, `nvidia/Qwen3.6-35B-A3B-NVFP4` on vLLM
 | Weights in memory | 20.4 GiB | ~28 GiB |
 
 On vLLM 0.33.0 (7 November, `presence_penalty` 1.5 as server default) the same
-harness gives 78.9 tok/s and 0.06 s to first token. Two concurrent streams
+harness gives 78.9 tok/s and 0.06 s to first token. spark1, moved to the same
+setup on 8 November with prefix caching off, gives 80.3 tok/s and 0.07 s. Two concurrent streams
 reached 103-119 tok/s combined.
 
 *Same harness for both: one warm-up, then three streamed runs of 512 tokens
