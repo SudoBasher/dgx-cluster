@@ -25,7 +25,7 @@ ExecStartPre=-/usr/bin/docker rm -f {{ bifrost_container_name }}
 ExecStart=/usr/bin/docker run \
     --rm \
     --name {{ bifrost_container_name }} \
-    --publish 0.0.0.0:{{ bifrost_port }}:{{ bifrost_port }} \
+    --publish {{ bifrost_publish_address }}:{{ bifrost_port }}:{{ bifrost_port }} \
     --volume {{ bifrost_data_dir }}:/app/data \
     --env-file {{ bifrost_base_dir }}/bifrost.env \
     --add-host host.docker.internal:host-gateway \

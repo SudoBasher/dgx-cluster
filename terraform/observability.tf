@@ -121,6 +121,11 @@ resource "aws_instance" "obs_write" {
   }
 
   tags = { Name = "${local.name}-obs-write" }
+
+  # A newer Ubuntu AMI must not rebuild the node; see aws_instance.netbird.
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }
 
 resource "aws_instance" "obs_read" {
@@ -144,6 +149,11 @@ resource "aws_instance" "obs_read" {
   }
 
   tags = { Name = "${local.name}-obs-read" }
+
+  # A newer Ubuntu AMI must not rebuild the node; see aws_instance.netbird.
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }
 
 # Stable addresses so peers do not have to rediscover them after a stop/start.

@@ -5,7 +5,7 @@
 [Unit]
 Description=Open WebUI
 Documentation=https://docs.openwebui.com
-After=docker.service network-online.target
+After=docker.service network-online.target {{ owui_service_name }}-firewall.service
 Requires=docker.service
 Wants=network-online.target
 {% if owui_llm_base_url is search('host.docker.internal') %}
@@ -27,7 +27,7 @@ ExecStartPre=-/usr/bin/docker rm -f {{ owui_container_name }}
 ExecStart=/usr/bin/docker run \
     --rm \
     --name {{ owui_container_name }} \
-    --publish {{ owui_port }}:8080 \
+    --publish 0.0.0.0:{{ owui_port }}:8080 \
     --volume {{ owui_data_dir }}:/app/backend/data \
     --env-file {{ owui_base_dir }}/openwebui.env \
     --add-host host.docker.internal:host-gateway \

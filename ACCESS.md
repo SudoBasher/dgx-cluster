@@ -163,9 +163,9 @@ in LM Studio run on desktop2's own hardware and never reach Bifrost.
 |---|---|---|
 | Grafana | http://100.123.229.83:3000 | metrics and log exploration; login `admin`, password in `.secrets/grafana.yml` |
 | NetBird dashboard | https://vpn.isc-spectro-sbx.click | the only public endpoint |
-| Open WebUI (spark1) | http://100.123.96.149:3001 | uses `qwen3.6-35b-a3b`; first account created is the admin |
+| Open WebUI (spark1) | http://100.123.96.149:3001 | uses `qwen3.6-35b-a3b`; first account created is the admin; VPN only, the lab LAN is blocked |
 | Open WebUI (spark2) | http://100.123.5.235:3001 | same as spark1; goes away when spark2 is wiped |
-| Bifrost gateway (spark1) | https://bifrost.isc-spectro-sbx.click | OpenAI-compatible at `/v1`, MCP at `/mcp`; per-client virtual key; dashboard login in `.secrets/bifrost.yml`. Plain `http://100.123.96.149:4000` still works until it's closed (RUNBOOK section 26) |
+| Bifrost gateway (spark1) | https://bifrost.isc-spectro-sbx.click | OpenAI-compatible at `/v1`, MCP at `/mcp`; per-client virtual key; dashboard login in `.secrets/bifrost.yml`. Port 4000 listens on spark1's loopback only, so HTTPS is the only way in |
 | vLLM (spark1) | http://100.123.96.149:8000/v1 | OpenAI-compatible; requires a key |
 | vLLM (spark2) | http://100.123.5.235:8000/v1 | OpenAI-compatible; requires a key |
 | Thanos Query | http://100.123.229.83:19192 | raw PromQL, debugging |
@@ -195,6 +195,7 @@ curl -H "Authorization: Bearer $KEY" http://100.123.96.149:8000/v1/models
 The published port only accepts the VPN overlay, the Docker bridges, the
 interconnect and loopback. **Both Ethernet networks are blocked**, so a client
 on the lab LAN must join the VPN rather than using `spark-a01a.tommyslab:8000`.
+Open WebUI's port 3001 is restricted the same way.
 Widen `ms_allowed_cidrs` in `roles/model_server/defaults/main.yml` if that is
 not what you want.
 

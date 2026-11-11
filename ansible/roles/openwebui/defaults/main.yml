@@ -46,6 +46,19 @@ owui_llm_api_key: >-
 # the cost of admin-UI changes being lost on restart.
 owui_persistent_config: true
 
+## Network allowlist (DOCKER-USER), same roles/port_allowlist as vLLM's
+# Until 2026-11-11 the port was open to the lab LAN and, through docker-proxy
+# on [::], over IPv6, so the admin password was the only guard. Now the same
+# networks as vLLM and Bifrost: loopback, Docker bridges, the VPN overlay.
+# IPv4 only: the unit publishes on 0.0.0.0, and the play fails if the port
+# ever listens on IPv6. The rule matches container port 8080; no other
+# container here listens on it (Bifrost's image exposes 8080 but serves 4000).
+owui_restrict_network: true
+owui_allowed_cidrs:
+  - 127.0.0.0/8
+  - 172.16.0.0/12          # Docker bridge networks
+  - 100.64.0.0/10          # NetBird overlay
+
 ## Anything else, as KEY: value
 owui_extra_env: {}
 

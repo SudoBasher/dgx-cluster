@@ -51,11 +51,13 @@
         enabled: false
       failed_when: false
 
+    # docker rm -f exits 0 either way and prints the name only when it removed
+    # a container, so key changed off the output.
     - name: Remove any lingering container
       ansible.builtin.command:
         cmd: docker rm -f {{ ms_container_name }}
       register: _ms_rm
-      changed_when: _ms_rm.rc == 0
+      changed_when: _ms_rm.stdout | length > 0
       failed_when: false
 
     - name: Remove the unit file

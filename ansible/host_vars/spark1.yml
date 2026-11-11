@@ -158,6 +158,13 @@ tlsp_fqdn: bifrost.isc-spectro-sbx.click
 tlsp_upstream: "http://127.0.0.1:{{ bifrost_port | default(4000) }}"
 bifrost_external_url: "{{ 'https://' ~ tlsp_fqdn if _tls_ready else '' }}"
 
+# With HTTPS up, port 4000 is published on loopback only (since 2026-11-11):
+# nginx and the telemetry scraper are its only callers, so a client left on
+# http://100.123.96.149:4000 fails instead of quietly skipping HTTPS. Dropping
+# the VPN range from bifrost_allowed_cidrs would not do it: NetBird accepts
+# everything from wt0 in FORWARD before Docker's DOCKER-USER chain is reached.
+bifrost_publish_address: "{{ '127.0.0.1' if _tls_ready else '0.0.0.0' }}"
+
 ## MCP: Gmail through Bifrost
 # Bifrost logs each person into Google (per_user_oauth) and keeps their token
 # under their own virtual key; the Workspace MCP server (roles/workspace_mcp)

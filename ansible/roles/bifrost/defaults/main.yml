@@ -21,6 +21,11 @@ bifrost_container_name: bifrost
 # listen on Bifrost's default 8080 internally (Open WebUI does).
 bifrost_port: 4000
 
+# Host address the port is published on. 127.0.0.1 when a local proxy
+# (roles/tls_proxy) is the only way in; never [::], which the IPv4-only
+# allowlist below can't see.
+bifrost_publish_address: "0.0.0.0"
+
 ## Host paths
 # The image runs as UID 1000 and writes config.db and logs.db under /app/data.
 bifrost_base_dir: /opt/bifrost
@@ -94,8 +99,10 @@ bifrost_vk_mcp_grants: {}
 bifrost_mcp_temp_token_auth: true
 
 ## Network allowlist (DOCKER-USER), same roles/port_allowlist as vLLM's
-# IPv4 only: the unit publishes on 0.0.0.0, and the play fails if the port
-# ever listens on IPv6.
+# IPv4 only: the unit publishes on bifrost_publish_address, and the play fails
+# if the port ever listens on IPv6. Blocks the Ethernet networks only: NetBird
+# accepts VPN traffic in FORWARD before DOCKER-USER, so the VPN entry is never
+# consulted (ansible/README.md, Source allowlist).
 bifrost_restrict_network: true
 bifrost_allowed_cidrs:
   - 127.0.0.0/8

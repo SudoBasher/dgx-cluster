@@ -37,7 +37,7 @@ roles/model_server/       model-agnostic vLLM role
 roles/anythingllm/        web front end, enabled per node (retired, kept for rollback)
 roles/openwebui/          web front end, enabled per node (both Sparks)
 roles/bifrost/            LLM gateway in front of vLLM, enabled per node (spark1)
-roles/port_allowlist/     DOCKER-USER source allowlist, shared by vLLM and Bifrost
+roles/port_allowlist/     DOCKER-USER source allowlist, shared by vLLM, Bifrost and Open WebUI
 roles/tls_proxy/          nginx + Let's Encrypt (Route53 DNS-01) in front of Bifrost (spark1)
 roles/workspace_mcp/      Google Workspace MCP server behind Bifrost (spark1)
 vars/none.yml             empty stand-in for optional .secrets files
@@ -152,10 +152,19 @@ purpose.
 
 vLLM's API keys don't cover `/invocations`, so the port itself is restricted.
 `roles/port_allowlist` installs a script and a oneshot unit (`vllm-firewall`,
-and `bifrost-firewall` for the gateway) that put rules in Docker's
+`bifrost-firewall`, `openwebui-firewall`) that put rules in Docker's
 `DOCKER-USER` chain: established connections, then one `RETURN` per allowed
 CIDR, then `DROP`, all tagged with an iptables comment (`vllm-acl`,
-`bifrost-acl`) so a rerun replaces exactly its own rules.
+`bifrost-acl`, `openwebui-acl`) so a rerun replaces exactly its own rules.
+Open WebUI joined on 2026-11-11; until then its port 3001 was open to the lab
+LAN, over IPv6 as well.
+
+The allowlist can block the lab LAN but not the VPN. NetBird inserts
+`-A FORWARD -i wt0 -j ACCEPT` ahead of Docker's jump to `DOCKER-USER`, so
+traffic arriving over the VPN is accepted before these rules are reached;
+the `100.64.0.0/10` entries are never consulted. NetBird's own access policies
+decide who on the VPN gets in. To keep a port off the VPN, publish it on
+`127.0.0.1`, as Bifrost's port 4000 is.
 
 The rules are IPv4 only, so the services publish on `0.0.0.0` and nothing
 else. Until 2026-11-10 they also listened on `[::]`, and docker-proxy carried
@@ -238,9 +247,9 @@ which reserves 80% of the unified pool on spark1.
 
 ## Open WebUI
 
-Runs on spark1 at http://spark-a01a.tommyslab:3001 (since 2026-11-08) and on
-spark2 at http://spark-9d80.tommyslab:3001 (since 2026-11-07, until it is
-wiped). spark1's goes through Bifrost (`https://bifrost.isc-spectro-sbx.click/v1` since 2026-11-10,
+Runs on spark1 at http://100.123.96.149:3001 (since 2026-11-08) and on
+spark2 at http://100.123.5.235:3001 (since 2026-11-07, until it is wiped),
+over the VPN only; the `.tommyslab` LAN names stopped working on 2026-11-11. spark1's goes through Bifrost (`https://bifrost.isc-spectro-sbx.click/v1` since 2026-11-10,
 virtual key `spark1-openwebui`, default model `vllm/qwen3.6-35b-a3b`), so its
 chats are counted per client; spark2's talks to its vLLM directly. Same shape as the AnythingLLM role: one container under a
 systemd unit, reaching vLLM on the host through `host.docker.internal`, enabled
@@ -251,7 +260,8 @@ one to the other is a `host_vars` change.
 | Setting | Value | Why |
 |---|---|---|
 | Image | `ghcr.io/open-webui/open-webui:v0.13.0` | Pinned; upstream's `:main` and `:latest` track the main branch, not releases |
-| Port | 3001 → 8080 | Same host port AnythingLLM had, so the URL didn't change |
+| Port | 3001 → 8080, IPv4 only | Same host port AnythingLLM had, so the URL didn't change |
+| Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | `roles/port_allowlist` on container port 8080 (since 2026-11-11); the lab LAN is dropped |
 | Data | `/opt/openwebui/data` → `/app/backend/data` | SQLite database, uploads, embedding cache |
 | vLLM key | `openwebui` entry in `.secrets/vllm-keys.yml` | Its own revocable credential, shared by both instances |
 | Ollama | `ENABLE_OLLAMA_API=False` | vLLM only |
@@ -339,7 +349,7 @@ lists the ones opencode 2.2.6 sends with every model request:
 | Setting | Value | Why |
 |---|---|---|
 | Image | `maximhq/bifrost:v2.5.0` | Pinned; 2.1.0 fixed a critical unauthenticated RCE |
-| Port | 4000, published and listened on | Unique container port, so its firewall rule can't catch Open WebUI's internal 8080 |
+| Port | 4000, published on `127.0.0.1` once HTTPS is up (`bifrost_publish_address`) | Unique container port; loopback because nginx and the scraper are its only callers, and the VPN can't be filtered in `DOCKER-USER` |
 | Dashboard auth | on, admin from `.secrets/bifrost.yml` | Off by default upstream, which is what made that RCE reachable |
 | Inference auth | a virtual key, always | `enforce_auth_on_inference: true` |
 | Backend | vLLM through `host.docker.internal:8000`, `bifrost` key | Its own revocable credential |
@@ -347,7 +357,7 @@ lists the ones opencode 2.2.6 sends with every model request:
 | Upstream timeout | 1800 s | An 81920-token reply at ~80 tok/s takes ~17 min |
 | Content logging | off | Prompts from coding tools carry code; counts and latency are still logged |
 | `/metrics` | unauthenticated (`whitelisted_routes`) | Matches vLLM's; keeps the admin password out of the scraper |
-| Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | `roles/port_allowlist`, as for vLLM; published on IPv4 only; the lab LAN is dropped |
+| Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | `roles/port_allowlist`, as for vLLM; IPv4 only; the lab LAN is dropped. Matters only while published on `0.0.0.0` |
 
 *Table: Bifrost role settings. Defaults in `roles/bifrost/defaults/main.yml`.*
 

@@ -1926,7 +1926,7 @@ nodes to one set.
 - `netbird_config` warns about policies enabled in NetBird but missing from
   the list, and leaves them alone.
 
-## 26. HTTPS for Bifrost and Gmail through MCP `[spark1]` (Gmail in progress)
+## 26. HTTPS for Bifrost and Gmail through MCP `[spark1]`
 
 ```bash
 cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-mcp-scaffold-20261110.log
@@ -2003,9 +2003,9 @@ cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs
 replace netbird-cp, obs-read and obs-write, because the Ubuntu AMI lookup now
 finds a newer image (`ami-065a2acd39a66257a` to `ami-0bec25ae844865e7d`, which
 forces replacement). That has nothing to do with this change and would
-rebuild the VPN control plane and both observability nodes. Until the
-instances ignore AMI changes, every apply here needs `-target` or a
-deliberate decision to rebuild.
+rebuild the VPN control plane and both observability nodes. The instances
+have ignored AMI changes since section 27, so a plain apply no longer does
+this.
 
 Two role fixes on the way:
 
@@ -2108,5 +2108,64 @@ from inside the Open WebUI container after the restart returned `Pong!`.
 
 - Open WebUI: an MCP connection that gives each user their own identity
   (OAuth 2.1 against Bifrost).
-- Drop the VPN range from Bifrost's port-4000 allowlist, so HTTPS is the only
-  way in from outside spark1.
+- ~~Drop the VPN range from Bifrost's port-4000 allowlist.~~ Done in section
+  27, by publishing the port on loopback instead.
+
+## 27. Second audit fixes `[workstation, spark1, spark2]`
+
+A second `/ponytail-audit` on 2026-11-11 found five things. All five are fixed.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A plain `tofu apply` would replace netbird-cp, obs-read and obs-write, because the AMI lookup follows Canonical's newest image | `lifecycle { ignore_changes = [ami] }` on all three `aws_instance` resources |
+| 2 | Open WebUI's port 3001 was open to the lab LAN, and over IPv6 | `openwebui-firewall` from `roles/port_allowlist` on container port 8080; published on `0.0.0.0` only |
+| 3 | Bifrost still answered plain HTTP on port 4000 over the VPN | Published on `127.0.0.1` (`bifrost_publish_address`) |
+| 4 | `workspace_mcp` defaults said teardown removes the Docker network | Comment corrected: unit and container only |
+| 5 | `model_server` teardown reported `changed` on every run | `changed_when` keyed on `docker rm -f` output, as in the other roles |
+
+*Table 27.1. Findings and fixes.*
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1,spark2 --diff > ../logs/site-sparks-audit2-fixes-20261111.log 2>&1
+cd ansible && ansible-playbook site.yml --limit spark1 --diff > ../logs/site-spark1-bifrost-loopback-20261111.log 2>&1
+bin/aws-mfa-session
+cd terraform && tofu plan | tee ../logs/tofu-plan-ami-ignore-20261111.log
+```
+
+### Why the Bifrost fix moved from the allowlist to loopback
+
+The first attempt removed `100.64.0.0/10` from Bifrost's allowlist. The rule
+set changed, but port 4000 still answered from desktop2 over the VPN. The
+reason is NetBird's FORWARD rules on spark1:
+
+```
+-A FORWARD -o wt0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i wt0 -j ACCEPT
+-A FORWARD -j DOCKER-USER
+```
+
+Anything arriving on `wt0` is accepted before Docker's `DOCKER-USER` chain is
+reached, so the allowlists can only ever block the Ethernet networks. NetBird's
+own policies control VPN access. Publishing on `127.0.0.1` keeps the port off
+every network. nginx (`proxy_pass http://127.0.0.1:4000`) and the telemetry
+scraper were its only callers.
+
+| Check | Result |
+|---|---|
+| `http://spark-a01a.tommyslab:3001` and `spark-9d80.tommyslab:3001` from desktop2 (LAN) | no connection |
+| `http://100.123.96.149:3001` and `100.123.5.235:3001` over the VPN | `200` |
+| `ss` on spark1, port 3001 | `0.0.0.0:3001` only, no `[::]` |
+| `DOCKER-USER` | one `openwebui-acl` set (3 CIDRs + 2) |
+| `http://100.123.96.149:4000/health` over the VPN | no connection |
+| `https://bifrost.isc-spectro-sbx.click/health` | `200` |
+| `http://127.0.0.1:4000/metrics` on spark1 | `200`, so the scrape still works |
+| `tools/list` on `/mcp` with `vk-sudobasher` after Bifrost's restart | 3 Gmail tools |
+| Open WebUI container to Bifrost `/v1/models` | `200`, `vllm/qwen3.6-35b-a3b` |
+
+*Table 27.2. After the run.*
+
+`tofu plan` after `bin/aws-mfa-session` shows no resource changes, so the
+three instances are no longer replaced. The only diff is two stale outputs in
+state, `netbird_b_fqdn` and `netbird_b_public_ip`, left over from the removed
+relay-b. Any later apply drops them without touching real infrastructure.
+

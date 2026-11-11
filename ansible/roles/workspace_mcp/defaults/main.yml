@@ -10,7 +10,8 @@
 # sent the request and stores nothing.
 
 ## On/off
-# Set false to stop the service, disable it and remove the unit and network.
+# Set false to stop the service, disable it and remove the unit and container.
+# The mcp Docker network is left in place.
 wmcp_enabled: false
 
 ## Image
