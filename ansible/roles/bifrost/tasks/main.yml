@@ -119,27 +119,19 @@
       register: _bf_env
       no_log: true
 
-    ## Source-network allowlist
-    - name: Install the allowlist script
-      become: true
-      ansible.builtin.template:
-        src: bifrost-firewall.sh.j2
-        dest: /usr/local/sbin/{{ bifrost_service_name }}-firewall
-        owner: root
-        group: root
-        mode: "0750"
-      register: _bf_fw_script
-
-    - name: Install the allowlist unit
-      become: true
-      ansible.builtin.template:
-        src: bifrost-firewall.service.j2
-        dest: /etc/systemd/system/{{ bifrost_service_name }}-firewall.service
-        owner: root
-        group: root
-        mode: "0644"
-      register: _bf_fw_unit
-      notify: reload systemd for bifrost
+    ## Source-network allowlist, shared with model_server
+    # The container listens on bifrost_port too, so it's also the port
+    # DOCKER-USER sees after DNAT.
+    - name: Source-network allowlist
+      ansible.builtin.include_role:
+        name: port_allowlist
+      vars:
+        pa_name: "{{ bifrost_service_name }}-firewall"
+        pa_tag: bifrost-acl
+        pa_before_unit: "{{ bifrost_service_name }}.service"
+        pa_container_port: "{{ bifrost_port }}"
+        pa_restrict: "{{ bifrost_restrict_network }}"
+        pa_allowed_cidrs: "{{ bifrost_allowed_cidrs }}"
 
     ## Gateway unit
     - name: Install the Bifrost unit
@@ -157,14 +149,6 @@
       ansible.builtin.meta: flush_handlers
 
     ## Start
-    - name: Enable and apply the allowlist
-      become: true
-      ansible.builtin.systemd:
-        name: "{{ bifrost_service_name }}-firewall"
-        enabled: true
-        state: >-
-          {{ 'restarted' if (_bf_fw_script.changed or _bf_fw_unit.changed) else 'started' }}
-
     - name: Enable and start Bifrost
       become: true
       ansible.builtin.systemd:
@@ -186,6 +170,16 @@
       retries: "{{ (bifrost_health_timeout | int / 10) | int }}"
       delay: 10
       when: bifrost_wait_for_health
+
+    - name: Confirm the allowlist can't be bypassed over IPv6
+      ansible.builtin.include_role:
+        name: port_allowlist
+        tasks_from: verify
+      vars:
+        pa_host_port: "{{ bifrost_port }}"
+        pa_tag: bifrost-acl
+        pa_allowed_cidrs: "{{ bifrost_allowed_cidrs }}"
+      when: bifrost_wait_for_health and bifrost_restrict_network
 
     # End to end through the gateway with the first virtual key: proves the
     # key is accepted, the vLLM credential works and the model is routed.

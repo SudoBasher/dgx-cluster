@@ -1,0 +1,11 @@
+---
+- name: reload nginx
+  become: true
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+
+- name: reload systemd for tls_proxy
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true

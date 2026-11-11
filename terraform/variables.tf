@@ -49,3 +49,15 @@ variable "netbird_mgmt_url" {
   type    = string
   default = "https://vpn.isc-spectro-sbx.click"
 }
+
+variable "bifrost_hostname" {
+  type        = string
+  default     = "bifrost"
+  description = "Label under dns_zone for the Bifrost gateway's HTTPS name."
+}
+
+variable "bifrost_overlay_ip" {
+  type        = string
+  default     = "100.123.96.149"
+  description = "spark1's NetBird overlay address. The record is public, but this address is only reachable over the VPN."
+}

@@ -26,7 +26,7 @@ ExecStart=/usr/bin/docker run \
     --gpus all \
     --ipc=host \
     --shm-size={{ ms_shm_size }} \
-    --publish {{ ms_port }}:8000 \
+    --publish 0.0.0.0:{{ ms_port }}:8000 \
     --volume {{ ms_cache_dir }}:/root/.cache/huggingface \
     --volume {{ ms_compile_cache_dir }}:/root/.cache/vllm \
     --env HF_HOME=/root/.cache/huggingface \

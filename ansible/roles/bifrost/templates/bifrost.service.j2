@@ -25,10 +25,13 @@ ExecStartPre=-/usr/bin/docker rm -f {{ bifrost_container_name }}
 ExecStart=/usr/bin/docker run \
     --rm \
     --name {{ bifrost_container_name }} \
-    --publish {{ bifrost_port }}:{{ bifrost_port }} \
+    --publish 0.0.0.0:{{ bifrost_port }}:{{ bifrost_port }} \
     --volume {{ bifrost_data_dir }}:/app/data \
     --env-file {{ bifrost_base_dir }}/bifrost.env \
     --add-host host.docker.internal:host-gateway \
+{% if bifrost_docker_network | length > 0 %}
+    --network {{ bifrost_docker_network }} \
+{% endif %}
     {{ bifrost_image }}
 
 ExecStop=/usr/bin/docker stop --time 30 {{ bifrost_container_name }}

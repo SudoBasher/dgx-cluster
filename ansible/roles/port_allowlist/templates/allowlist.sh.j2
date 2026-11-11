@@ -1,0 +1,46 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Restricts who may reach container port {{ pa_container_port }} ({{ pa_tag }}).
+#
+# The rules go in DOCKER-USER because Docker evaluates that chain before its
+# own and never rewrites it. An INPUT rule would not work: traffic to a
+# published port is DNATed and forwarded, so it never traverses INPUT. After
+# DNAT the destination is the container port, which is what's matched here.
+#
+# IPv4 only. The service must publish on 0.0.0.0, not [::], or IPv6 clients
+# get in through docker-proxy; port_allowlist's verify step checks that.
+set -euo pipefail
+
+## Settings
+TAG="{{ pa_tag }}"
+CPORT={{ pa_container_port }}
+
+## Remove rules from a previous run, so reruns are idempotent
+# iptables-save prints the comment unquoted (--comment vllm-acl) because the
+# tag has no spaces. Until 2026-11-10 this matched only the quoted form, so
+# old rules were never removed and every reapply stacked another full set.
+# On a first run grep matches nothing and exits 1, which pipefail would turn
+# into a script failure, hence the guard.
+existing="$(iptables-save -t filter 2>/dev/null | grep -E -- "--comment \"?${TAG}\"? " || true)"
+if [ -n "${existing}" ]; then
+  printf '%s\n' "${existing}" | sed 's/^-A /-D /' | while read -r rule; do
+    # shellcheck disable=SC2086
+    iptables -t filter $rule 2>/dev/null || true
+  done
+fi
+
+{% if pa_restrict %}
+## Insert in reverse: final order is established, allowed CIDRs, drop
+# Appending would land after DOCKER-USER's trailing RETURN and never be reached.
+iptables -I DOCKER-USER 1 -p tcp --dport "${CPORT}" \
+    -m comment --comment "${TAG}" -j DROP
+{% for cidr in pa_allowed_cidrs %}
+iptables -I DOCKER-USER 1 -p tcp --dport "${CPORT}" -s {{ cidr }} \
+    -m comment --comment "${TAG}" -j RETURN
+{% endfor %}
+iptables -I DOCKER-USER 1 -p tcp --dport "${CPORT}" \
+    -m conntrack --ctstate RELATED,ESTABLISHED \
+    -m comment --comment "${TAG}" -j RETURN
+{% endif %}
+
+exit 0

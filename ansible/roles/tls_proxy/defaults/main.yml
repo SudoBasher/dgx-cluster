@@ -1,0 +1,36 @@
+---
+# HTTPS in front of a local HTTP service: nginx terminates TLS, certbot keeps
+# a Let's Encrypt certificate current with a Route53 DNS-01 challenge. No
+# inbound port 80 and nothing public: the challenge is a TXT record, so the
+# name can point at a VPN-only address. Off by default; enable per node.
+
+## On/off
+# Set false to remove the site and stop nginx. The certificate is kept.
+tlsp_enabled: false
+
+## Site
+tlsp_fqdn: ""                       # e.g. bifrost.isc-spectro-sbx.click
+tlsp_port: 443
+tlsp_upstream: ""                   # e.g. http://127.0.0.1:4000
+
+# Long LLM replies stream for up to ~17 minutes (81920 tokens at ~80 tok/s),
+# so reads must outlast them. Matches Bifrost's own upstream timeout.
+tlsp_proxy_timeout_seconds: 1800
+tlsp_client_max_body_size: 64m
+
+## Who may connect
+# Checked by nginx before proxying. Same networks as the Bifrost and vLLM
+# allowlists; the lab LAN isn't on it. nginx listens on IPv4 only.
+tlsp_allowed_cidrs:
+  - 127.0.0.0/8
+  - 172.16.0.0/12          # Docker bridge networks (Open WebUI's container)
+  - 100.64.0.0/10          # NetBird overlay
+
+## Certificate
+# Issued without an email address, so expiry notices go nowhere; certbot's
+# timer renews 30 days early and the play reports the expiry date.
+# Route53 credentials, from .secrets/acme-route53.yml (loaded by site.yml):
+#   acme_aws_access_key_id, acme_aws_secret_access_key
+# The IAM user behind them may only write _acme-challenge.<tlsp_fqdn> TXT
+# records (terraform/bifrost.tf).
+tlsp_aws_credentials_file: /etc/letsencrypt/aws-route53-credentials

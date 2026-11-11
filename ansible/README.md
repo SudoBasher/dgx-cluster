@@ -12,8 +12,23 @@ other.
 
 ## Layout
 
+`ansible.cfg` has `host_key_checking = True` (since 2026-11-10). Every host is
+in `../.ssh/known_hosts`, so a host whose key changed fails to connect instead
+of being handed the play's secrets. After a node is rebuilt, replace its line
+in that file on purpose:
+
+```bash
+ssh-keygen -f ../.ssh/known_hosts -R spark-a01a.tommyslab
+ssh -F ../.ssh/config -o StrictHostKeyChecking=accept-new spark1 true
 ```
-ansible.cfg               points ssh at ../.ssh/config
+
+*Host keys are recorded per address: spark1 has two entries,
+`spark-a01a.tommyslab` (alias `spark1`) and `100.123.96.149` (`spark1-vpn`),
+and a rebuild needs both replaced. `spark2-vpn` (`100.123.5.235`) has no entry
+yet, so its first connection must accept the key with `accept-new`.*
+
+```
+ansible.cfg               points ssh at ../.ssh/config; host keys checked
 inventory.yml             spark1, spark2
 group_vars/all.yml        shared defaults
 host_vars/spark1.yml      what spark1 runs      <- edit these
@@ -22,6 +37,10 @@ roles/model_server/       model-agnostic vLLM role
 roles/anythingllm/        web front end, enabled per node (retired, kept for rollback)
 roles/openwebui/          web front end, enabled per node (both Sparks)
 roles/bifrost/            LLM gateway in front of vLLM, enabled per node (spark1)
+roles/port_allowlist/     DOCKER-USER source allowlist, shared by vLLM and Bifrost
+roles/tls_proxy/          nginx + Let's Encrypt (Route53 DNS-01) in front of Bifrost (spark1)
+roles/workspace_mcp/      Google Workspace MCP server behind Bifrost (spark1)
+vars/none.yml             empty stand-in for optional .secrets files
 site.yml                  the playbook
 ```
 
@@ -111,7 +130,7 @@ Set in `host_vars/<node>.yml` to override `group_vars/all.yml`.
 | `ms_max_model_len` | `262144` | Reduce for larger models |
 | `ms_port` | `8000` | Change to run two services on one node |
 | `ms_gpu_memory_utilization` | `0.80` | See below |
-| `ms_image` | `vllm/vllm-openai:latest` | Pin a tag for reproducibility |
+| `ms_image` | — | Required, and must be a pinned tag; the role refuses `:latest` |
 | `ms_extra_args` | `[]` | Extra vLLM CLI flags |
 | `ms_hf_token` | `""` | Only for gated repos; keep out of git |
 | `ms_predownload` | `true` | Fetch weights before starting the service |
@@ -123,6 +142,34 @@ Raising it toward 0.95 will start starving the OS.
 
 Never raise `ms_tensor_parallel_size` above 1. Each node has one GPU, and
 tensor parallelism across nodes is the one topology this cluster handles badly.
+
+`ms_image` has no default. A floating tag like `:latest` would be pulled by
+every run but only take effect at vLLM's next restart, whenever that happened
+to be. A pinned tag lives in the unit file, so changing it restarts vLLM on
+purpose.
+
+### Source allowlist
+
+vLLM's API keys don't cover `/invocations`, so the port itself is restricted.
+`roles/port_allowlist` installs a script and a oneshot unit (`vllm-firewall`,
+and `bifrost-firewall` for the gateway) that put rules in Docker's
+`DOCKER-USER` chain: established connections, then one `RETURN` per allowed
+CIDR, then `DROP`, all tagged with an iptables comment (`vllm-acl`,
+`bifrost-acl`) so a rerun replaces exactly its own rules.
+
+The rules are IPv4 only, so the services publish on `0.0.0.0` and nothing
+else. Until 2026-11-10 they also listened on `[::]`, and docker-proxy carried
+IPv6 connections in from `172.17.0.1`, an address the allowlist trusts. Any
+host on the lab LAN could reach vLLM and Bifrost over link-local IPv6. After
+start, the play checks that:
+
+- the port has no IPv6 listener (`ss -Hltn 'sport = :8000'`), and
+- `DOCKER-USER` holds exactly one rule set (allowed CIDRs + 2).
+
+The second check exists because the cleanup step had never matched: it looked
+for a quoted comment that `iptables-save` doesn't print, so every reapply
+stacked another set. Removing a CIDR from the list would have left its old
+`RETURN` rule in force.
 
 ## Operations
 
@@ -193,7 +240,7 @@ which reserves 80% of the unified pool on spark1.
 
 Runs on spark1 at http://spark-a01a.tommyslab:3001 (since 2026-11-08) and on
 spark2 at http://spark-9d80.tommyslab:3001 (since 2026-11-07, until it is
-wiped). spark1's goes through Bifrost (`http://host.docker.internal:4000/v1`,
+wiped). spark1's goes through Bifrost (`https://bifrost.isc-spectro-sbx.click/v1` since 2026-11-10,
 virtual key `spark1-openwebui`, default model `vllm/qwen3.6-35b-a3b`), so its
 chats are counted per client; spark2's talks to its vLLM directly. Same shape as the AnythingLLM role: one container under a
 systemd unit, reaching vLLM on the host through `host.docker.internal`, enabled
@@ -219,21 +266,38 @@ and passed in. Left unset, the image's `start.sh` writes a fresh key to
 `/app/backend/.webui_secret_key`, which is outside the data volume, so every
 restart of this `--rm` container would log everyone out.
 
-Most settings are seeded, not enforced. Open WebUI keeps the vLLM URL and key,
-sign-up, default models and most admin settings in its database. The
+Most settings are seeded, not enforced. Open WebUI keeps the backend URL and
+key, sign-up, default models and most admin settings in its database. The
 environment only fills them in on the first launch; after that the database
-wins and editing the role changes nothing. To rotate the vLLM key, change it in
-the admin UI (Settings, Connections) as well as in `.secrets`, or set
-`owui_persistent_config: false` to make the environment win on every start at
-the cost of losing admin-UI changes on restart.
+wins. Three keys are the exception: after every start the play runs
+`files/sync_connection.py` inside the container, which copies
+`OPENAI_API_BASE_URLS`, `OPENAI_API_KEYS` and `DEFAULT_MODELS` from the env
+into `openai.api_base_urls`, `openai.api_keys` and `ui.default_models`, and
+restarts Open WebUI if any of them changed. So changing the backend, rotating
+its key or renaming the default model is a `host_vars` or `.secrets` change.
+A connection edited in the admin UI is overwritten on the next run. Everything
+else still follows the database. `owui_persistent_config: false` makes the
+environment win for every setting, at the cost of losing all admin-UI changes
+on restart.
+
+The sync exists because of a miss on 2026-11-08: spark1 was switched to
+Bifrost in `host_vars`, but its database had already stored the direct vLLM
+URL, so chats bypassed the gateway until 2026-11-09 (RUNBOOK section 24).
+
+spark1 also forwards who sent each request (`owui_extra_env` in
+`host_vars/spark1.yml`). Open WebUI's user-info headers are renamed to
+`x-bf-lh-owui-user`, `-user-id`, `-role` and `-chat-id`, which Bifrost records
+as log metadata (see Bifrost below). The email header keeps its default name,
+which Bifrost ignores, so addresses stay out of the gateway's logs.
 
 Open WebUI sends no `max_tokens` unless one is set in a model's parameters, so
 the output cap lives in vLLM instead: `max_new_tokens` in spark2's
 `--override-generation-config` (81920), which covers every client that leaves
 `max_tokens` out.
 
-The play checks the link to vLLM from inside the container, using the URL and
-key Open WebUI was actually given, and fails if the default model isn't listed.
+The play checks the link to the backend from inside the container, using the
+env's URL and key (which the sync has just made the database's too), and fails
+if the default model isn't listed.
 
 ## Bifrost
 
@@ -242,6 +306,35 @@ the local vLLM, with a virtual key per client so token use and latency can be
 told apart in Grafana. Enabled with `bifrost_enabled: true` and
 `bifrost_vllm_model` in a node's `host_vars`; `bifrost_enabled: false` tears
 it down and keeps `/opt/bifrost/data`.
+
+Clients can tag their own requests. Any `x-bf-lh-<name>` request header is
+stored in that request's log entry as metadata key `<name>`, with no gateway
+config. The tags show in the dashboard's log detail view and in
+`GET /api/logs/{id}`, not in the log list. They never become Prometheus
+labels, so high-cardinality values like user or chat ids are fine. Bifrost
+also records each request's `User-Agent` on its own. It does not record the
+client's IP address.
+
+| Client | Header | Metadata key |
+|---|---|---|
+| opencode on desktop2 | `x-bf-lh-client-host: desktop2` | `client-host` |
+| Open WebUI on spark1 | `x-bf-lh-owui-user`, `-user-id`, `-role`, `-chat-id` | `owui-user`, `owui-user-id`, `owui-role`, `owui-chat-id` |
+
+*Table: per-request tags in Bifrost's logs, as of 2026-11-09.*
+
+Headers a client already sends can be recorded too, by listing them in
+`bifrost_logging_headers`. They land in metadata under their own name. spark1
+lists the ones opencode 2.2.6 sends with every model request:
+
+| Header | Value | Tells you |
+|---|---|---|
+| `x-opencode-client` | `cli` from both the terminal and the desktop app | nothing yet; the shared background server sets it |
+| `x-opencode-session`, `x-opencode-session-id`, `x-session-id`, `x-session-affinity` | `ses_…`, the same id in all four | which opencode session |
+| `x-opencode-project` | 40-hex hash | which project directory |
+| `traceparent`, `b3` | W3C and Zipkin trace ids | the OTel trace, for joining to traces later |
+
+*Table: opencode headers recorded in Bifrost's metadata via
+`bifrost_logging_headers` on spark1.*
 
 | Setting | Value | Why |
 |---|---|---|
@@ -254,7 +347,7 @@ it down and keeps `/opt/bifrost/data`.
 | Upstream timeout | 1800 s | An 81920-token reply at ~80 tok/s takes ~17 min |
 | Content logging | off | Prompts from coding tools carry code; counts and latency are still logged |
 | `/metrics` | unauthenticated (`whitelisted_routes`) | Matches vLLM's; keeps the admin password out of the scraper |
-| Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | Same model as vLLM's; the lab LAN is dropped |
+| Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | `roles/port_allowlist`, as for vLLM; published on IPv4 only; the lab LAN is dropped |
 
 *Table: Bifrost role settings. Defaults in `roles/bifrost/defaults/main.yml`.*
 
@@ -270,6 +363,74 @@ even on a node without Bifrost.
 The play ends with a one-token request through the gateway using the first
 virtual key, which proves the key, the vLLM credential and the routing in one
 go.
+
+## HTTPS for Bifrost
+
+`roles/tls_proxy` puts nginx on port 443 in front of Bifrost's port 4000, as
+`https://bifrost.isc-spectro-sbx.click`. That name is a public DNS record
+pointing at spark1's VPN address (`terraform/bifrost.tf`), so it only works on
+the VPN. The certificate comes from Let's Encrypt through a DNS-01 challenge:
+certbot writes a TXT record in Route53, so no port 80 and nothing public is
+needed. Google needs this. It refuses OAuth redirect URIs on plain HTTP or a
+bare IP.
+
+| Piece | Where | Notes |
+|---|---|---|
+| DNS record and IAM user | `terraform/bifrost.tf` | The IAM user may write only the `_acme-challenge` TXT record for this one name |
+| Route53 key | `.secrets/acme-route53.yml`, then `/etc/letsencrypt/aws-route53-credentials` (0600) | Created by hand so the secret stays out of Terraform state |
+| Certificate | `/etc/letsencrypt/live/<name>/` | `certbot.timer` renews it, with a drop-in giving it the key and a deploy hook reloading nginx |
+| Site | `/etc/nginx/sites-enabled/tls-proxy.conf` | IPv4 only, allowlist matching Bifrost's (loopback, Docker, VPN); streaming on, 1800 s timeouts |
+
+*Table: the TLS proxy. Switched on in `host_vars/spark1.yml` once the Route53
+key is present.*
+
+## Gmail through Bifrost (MCP)
+
+Bifrost is also an MCP gateway. Clients connect to `/mcp` with a virtual key,
+and Bifrost passes their tool calls on to MCP servers it's configured for,
+logging them like model requests.
+
+Gmail comes from `roles/workspace_mcp`, which runs the open-source
+[google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)
+server (`ghcr.io/taylorwilsdon/google_workspace_mcp:2.4.0`). It runs in
+external OAuth mode, read-only, with Gmail tools only. It never logs anyone in.
+Bifrost runs each person's Google login (`auth_type: per_user_oauth`), stores
+the token under that person's virtual key, and sends it as `Authorization:
+Bearer` with every call. The server checks the token against Google's userinfo
+API and reads Gmail as that person. It stores nothing (stateless mode,
+read-only container filesystem).
+
+```
+client ──https──▶ nginx ──▶ Bifrost /mcp ──http, Docker network "mcp"──▶ workspace-mcp ──▶ Gmail API
+          (VK)                 │  per-person Google token                       (as that person)
+                               └─ Google login on first use
+```
+
+*Figure: one Gmail tool call. The MCP server publishes no port; only
+containers on the `mcp` network reach it.*
+
+Identity is the virtual key. Each person gets one personal key (`vk-sudobasher`),
+separate from the per-client keys used for model traffic. Every client that
+person uses sends it for MCP, so they log in to Google once, not once per
+client. Access is deny by default: `bifrost_vk_mcp_grants` lists which key may
+use which MCP connection.
+
+| Setting | Value | Why |
+|---|---|---|
+| Scopes | `openid`, `userinfo.email`, `userinfo.profile`, `gmail.readonly` | Exactly what the server requires in read-only Gmail mode |
+| `authorize_url` | Google's, with `access_type=offline&prompt=consent` | Without them Google issues no refresh token and logins lapse after an hour |
+| `mcp_external_client_url` | `https://bifrost.isc-spectro-sbx.click` | Redirect URI becomes `<that>/api/oauth/callback`; changing it breaks stored logins |
+| `mcp_enable_temp_token_auth` | `true` | Login links carry a 15-minute token, so a person without the Bifrost admin login can finish theirs |
+| Server JWT key | `/opt/workspace-mcp/jwt_signing_key`, generated once | The server then doesn't need the Google client secret |
+
+*Table: Gmail MCP settings, in `host_vars/spark1.yml` and the two roles'
+defaults. Switched on once `.secrets/google-oauth.yml` has a client id.*
+
+A second Google account (for example a work account) is another entry in
+`_gmail_mcp_clients`, such as `gmail_work`, with the same server URL. Each
+connection holds its own login per key, and the tools come prefixed with the
+connection name. A Workspace admin may have to allow the OAuth client before a
+work account can log in.
 
 ## Adding a load balancer
 

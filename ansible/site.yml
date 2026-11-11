@@ -12,6 +12,10 @@
     # Bifrost admin, encryption key and virtual keys. Required by the play
     # even on nodes without Bifrost; see roles/bifrost/defaults/main.yml.
     - ../.secrets/bifrost.yml
+    # Optional: only nodes running the MCP gateway or the TLS proxy need them.
+    # Each line is "first file that exists", falling back to an empty file.
+    - ["../.secrets/google-oauth.yml", "vars/none.yml"]
+    - ["../.secrets/acme-route53.yml", "vars/none.yml"]
 
   pre_tasks:
     - name: Verify Docker exposes the nvidia runtime
@@ -89,9 +93,14 @@
 
   roles:
     - role: model_server
+    # MCP servers Bifrost connects to. Before Bifrost, which joins the Docker
+    # network this creates. Enabled per node via wmcp_enabled.
+    - role: workspace_mcp
     # Gateway in front of the local vLLM; enabled per node via bifrost_enabled.
     # Before the front ends, which may route through it and check the link.
     - role: bifrost
+    # HTTPS in front of Bifrost; enabled per node via tlsp_enabled.
+    - role: tls_proxy
     # Front ends. Each is enabled per node (allm_enabled, owui_enabled) and
     # runs after the model server so it has something to talk to on first
     # start. Disabled ones tear themselves down, so a node can switch between

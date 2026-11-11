@@ -368,7 +368,7 @@ sum by (virtual_key_name, status_code) (rate(bifrost_error_requests_total[5m]))
 ```
 
 `bifrost_cost_total` isn't emitted at all for this model (no series), since
-Bifrost has no price for a self-hosted vLLM model. Its own dashboard at http://100.123.96.149:4000 (admin
+Bifrost has no price for a self-hosted vLLM model. Its own dashboard at https://bifrost.isc-spectro-sbx.click (admin
 login in `.secrets/bifrost.yml`) shows the same counts per request, without
 prompt or response bodies, which are deliberately not stored.
 

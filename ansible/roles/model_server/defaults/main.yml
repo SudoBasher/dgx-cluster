@@ -14,7 +14,9 @@ ms_max_model_len: 262144
 
 # Serving
 ms_port: 8000
-ms_image: vllm/vllm-openai:latest
+# Required: a pinned release tag, set per node in host_vars. The role refuses
+# an empty or :latest value.
+ms_image: ""
 ms_service_name: vllm
 ms_container_name: vllm
 
@@ -48,7 +50,8 @@ ms_api_keys: []
 # Source networks allowed to reach the published port. Enforced in DOCKER-USER,
 # which Docker evaluates before its own rules and never rewrites, so this holds
 # where a plain INPUT rule would be bypassed. Being network-level it also covers
-# /invocations, which the API keys do not.
+# /invocations, which the API keys do not. IPv4 only: the unit publishes on
+# 0.0.0.0, and the play fails if the port ever listens on IPv6.
 #
 # Default admits the VPN overlay, the Docker bridges (AnythingLLM reaches vLLM
 # through host.docker.internal), the interconnect and loopback. It deliberately

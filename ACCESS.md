@@ -73,7 +73,7 @@ rather than straight to vLLM, so their usage shows up per client in Grafana.
 
 | Setting | Value |
 |---|---|
-| Base URL | `http://100.123.96.149:4000/v1` (over the VPN; the lab LAN is blocked) |
+| Base URL | `https://bifrost.isc-spectro-sbx.click/v1` (VPN only: the name points at spark1's overlay address; the lab LAN gets 403) |
 | Model | `vllm/qwen3.6-35b-a3b` |
 | API key | that client's `bifrost_virtual_keys` value in `.secrets/bifrost.yml`, sent as `Authorization: Bearer` |
 
@@ -96,6 +96,8 @@ than a shell, doesn't inherit shell variables.
 ```bash
 mkdir -p ~/.config/opencode
 VK=$(python3 -c "import yaml;print([k for k in yaml.safe_load(open('.secrets/bifrost.yml'))['bifrost_virtual_keys'] if k['name']=='desktop2-opencode'][0]['value'])")
+# MCP uses the person's key, not the client's: Bifrost files Google logins under it.
+MCP_VK=$(python3 -c "import yaml;print([k for k in yaml.safe_load(open('.secrets/bifrost.yml'))['bifrost_virtual_keys'] if k['name']=='sudobasher'][0]['value'])")
 cat > ~/.config/opencode/opencode.jsonc <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -104,13 +106,25 @@ cat > ~/.config/opencode/opencode.jsonc <<EOF
     "bifrost": {
       "name": "Bifrost (spark1)",
       "package": "@opencode/ai/providers/openai-compatible",
-      "settings": { "baseURL": "http://100.123.96.149:4000/v1", "apiKey": "$VK" },
+      "settings": { "baseURL": "https://bifrost.isc-spectro-sbx.click/v1", "apiKey": "$VK" },
+      "headers": { "x-bf-lh-client-host": "$(hostname)" },
       "models": {
         "vllm/qwen3.6-35b-a3b": {
           "name": "Qwen3.6 35B A3B (spark1)",
           "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
           "limit": { "context": 262144, "output": 81920 }
         }
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "bifrost": {
+        "type": "remote",
+        "url": "https://bifrost.isc-spectro-sbx.click/mcp",
+        "oauth": false,
+        "headers": { "x-bf-vk": "$MCP_VK" },
+        "codemode": false
       }
     }
   }
@@ -125,7 +139,14 @@ The provider id must not be `vllm`, `ollama` or `lmstudio`; opencode treats
 those as local runtimes and tries to discover them. A model key containing `/`
 works: the provider id ends at the first slash, so `bifrost/vllm/qwen3.6-35b-a3b`
 is provider `bifrost`, model `vllm/qwen3.6-35b-a3b`. Requests show up in
-Bifrost as `app=OpenCode`, user agent `opencode/latest/2.2.6/cli`.
+Bifrost as `app=OpenCode`, user agent `opencode/latest/2.2.6/cli`, with
+metadata `client-host` set from the `headers` line. The `mcp.servers.bifrost`
+entry gives opencode the Gmail tools Bifrost grants to `vk-sudobasher`.
+`codemode: false` exposes them as plain tool calls instead of opencode's Code
+Mode, which asks the model to write code that calls them. Bifrost doesn't log the
+client's IP, so that header is the only record of which machine sent a
+request. Any `x-bf-lh-<name>` header works the same way, so other clients can
+tag themselves too; see the Bifrost section of `ansible/README.md`.
 
 ### LM Studio
 
@@ -144,7 +165,7 @@ in LM Studio run on desktop2's own hardware and never reach Bifrost.
 | NetBird dashboard | https://vpn.isc-spectro-sbx.click | the only public endpoint |
 | Open WebUI (spark1) | http://100.123.96.149:3001 | uses `qwen3.6-35b-a3b`; first account created is the admin |
 | Open WebUI (spark2) | http://100.123.5.235:3001 | same as spark1; goes away when spark2 is wiped |
-| Bifrost gateway (spark1) | http://100.123.96.149:4000 | OpenAI-compatible at `/v1`; per-client virtual key; dashboard login in `.secrets/bifrost.yml` |
+| Bifrost gateway (spark1) | https://bifrost.isc-spectro-sbx.click | OpenAI-compatible at `/v1`, MCP at `/mcp`; per-client virtual key; dashboard login in `.secrets/bifrost.yml`. Plain `http://100.123.96.149:4000` still works until it's closed (RUNBOOK section 26) |
 | vLLM (spark1) | http://100.123.96.149:8000/v1 | OpenAI-compatible; requires a key |
 | vLLM (spark2) | http://100.123.5.235:8000/v1 | OpenAI-compatible; requires a key |
 | Thanos Query | http://100.123.229.83:19192 | raw PromQL, debugging |

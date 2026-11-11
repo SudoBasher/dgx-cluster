@@ -2,7 +2,7 @@
 # Settings shared by every node. Anything here can be overridden per node in
 # host_vars/, which is how the two Sparks are allowed to diverge.
 
-ms_image: vllm/vllm-openai:latest
+# ms_image is set per node (pinned) in host_vars; the role refuses :latest.
 ms_cache_dir: /opt/dgx-models
 ms_port: 8000
 

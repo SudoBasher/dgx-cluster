@@ -143,6 +143,37 @@
       delay: 10
       when: owui_wait_for_health
 
+    ## Keep the database on the connection given here
+    # With persistent config the database wins after the first launch, so a
+    # changed owui_llm_base_url, key or default model never took effect: spark1
+    # stayed on vLLM directly after the 2026-11-08 move to Bifrost. This copies
+    # the container's env into just those keys; other admin settings are kept.
+    - name: Sync the LLM connection into the Open WebUI database
+      ansible.builtin.command:
+        argv: [docker, exec, -i, "{{ owui_container_name }}", python3, "-"]
+        stdin: "{{ lookup('ansible.builtin.file', 'sync_connection.py') }}"
+      register: _owui_dbsync
+      changed_when: _owui_dbsync.stdout.startswith('updated')
+      when: owui_persistent_config and owui_wait_for_health
+
+    # Open WebUI caches its config at start, so the new values need a restart.
+    - name: Restart Open WebUI to load the synced connection
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ owui_service_name }}"
+        state: restarted
+      when: _owui_dbsync is changed
+
+    - name: Wait for Open WebUI after the sync restart
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ owui_port }}/health"
+        status_code: 200
+      register: _owui_health2
+      until: _owui_health2.status == 200
+      retries: "{{ (owui_health_timeout | int / 10) | int }}"
+      delay: 10
+      when: _owui_dbsync is changed
+
     ## Verify the link to vLLM, from inside the container
     # The browser check above can't see this hop. Uses the container's own
     # OPENAI_API_* values, so it proves the key and URL Open WebUI was given.

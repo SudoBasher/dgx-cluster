@@ -47,7 +47,7 @@ flowchart LR
     subgraph OBS["observability subnet 10.200.10.0/24 · EIPs · IGW-routed"]
       direction LR
       OW["<b>obs-write</b> · r7g.xlarge<br/>thanos-receive<br/>thanos-compact<br/>Loki"]
-      OR["<b>obs-read</b> · r7g.xlarge<br/>thanos-query + store<br/>Grafana · memcached"]
+      OR["<b>obs-read</b> · r7g.xlarge<br/>thanos-query + store<br/>Grafana"]
     end
     S3[("<b>S3</b><br/>dgx-cluster-telemetry<br/>blocks + chunks")]
     OW -- "write blocks" --> S3
@@ -187,7 +187,13 @@ cd ansible && ansible-playbook netbird-access.yml
 ```
 
 It runs against the API from localhost, needs no managed host, and converges to
-`changed=0`. Groups, setup keys, policies, routes and the lockdown are all in
+`changed=0`. Since 2026-11-10 it also updates what drifted: a listed policy or
+route whose settings differ is rewritten, and a setup key's groups are
+corrected (its revoked or expired state is left alone). Before that it only
+created missing items, so editing a listed policy changed nothing. Policies
+enabled in NetBird but missing from the list are reported, not deleted. The
+reads also run under `--check`, so `ansible-playbook netbird-access.yml
+--check` previews what would change. Groups, setup keys, policies, routes and the lockdown are all in
 that one file. There are no configuration shell scripts.
 
 Setup keys are the mechanism for onboarding a machine without a human in the
@@ -229,10 +235,8 @@ flowchart LR
     direction TB
     TS["thanos-store"]
     TQ["thanos-query"]
-    MC["memcached"]
     GF["<b>Grafana</b>"]
     TS --> TQ
-    MC -.-> TS
     TQ --> GF
   end
 
@@ -346,7 +350,7 @@ than a real change on the node.
 |---|---|---|---|---|
 | netbird-cp | public subnet, EIP + DNS | management, signal, dashboard, Dex, coturn | m7g.large | ~$43 |
 | obs-write | obs subnet, EIP | Thanos receive, compactor, Loki | r7g.xlarge | ~$98 |
-| obs-read | obs subnet, EIP | Thanos query + store, Loki read, Grafana, memcached | r7g.xlarge | ~$98 |
+| obs-read | obs subnet, EIP | Thanos query + store, Loki read, Grafana | r7g.xlarge | ~$98 |
 | EBS | | 300 + 150 + 30 GB gp3 | | ~$38 |
 | Elastic IPs | | 3 attached | | ~$7 |
 | S3 | | growing to ~55 GB | | ~$2 |
@@ -447,6 +451,13 @@ at startup says so. All keys go on one flag.
 The published port is therefore also restricted by source CIDR in DOCKER-USER,
 which is what actually closes the gap. Both Ethernet networks are excluded;
 clients join the VPN.
+
+**DOCKER-USER is IPv4 only, and Docker publishes on IPv6 too.** By default a
+published port also listens on `[::]` through docker-proxy, which forwards
+each connection from `172.17.0.1`, inside the trusted Docker range. Until
+2026-11-10 any lab-LAN host reached vLLM and Bifrost over link-local IPv6
+while IPv4 was blocked. Both now publish on `0.0.0.0` only, and the play fails
+if either port listens on IPv6.
 
 **Loki indexes only a default set of OTLP resource attributes.** `node` was not
 among them, so every log stream carried `service_name` alone and `{node="..."}`

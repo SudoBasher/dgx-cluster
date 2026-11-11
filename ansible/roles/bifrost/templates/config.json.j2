@@ -10,19 +10,32 @@
           'allowed_models': [bifrost_vllm_model],
           'key_ids': ['*'],
           'weight': 1
-        }]
+        }],
+        'mcp_configs': bifrost_vk_mcp_grants[vk.id] | default([])
+                       | selectattr('mcp_client_name', 'in', bifrost_mcp_clients | map(attribute='name') | list)
+                       | list
       }) -%}
 {%- endfor -%}
 {%- set client = {
       'enforce_auth_on_inference': true,
       'disable_content_logging': bifrost_disable_content_logging
     } -%}
+{%- if bifrost_logging_headers | length > 0 -%}
+{%-   set _ = client.update({'logging_headers': bifrost_logging_headers}) -%}
+{%- endif -%}
+{%- if bifrost_external_url | length > 0 -%}
+{%-   set _ = client.update({'mcp_external_client_url': bifrost_external_url}) -%}
+{%- endif -%}
+{%- if bifrost_mcp_clients | length > 0 -%}
+{%-   set _ = client.update({'mcp_enable_temp_token_auth': bifrost_mcp_temp_token_auth}) -%}
+{%- endif -%}
 {%- if bifrost_metrics_unauthenticated -%}
 {%-   set _ = client.update({'whitelisted_routes': ['/metrics']}) -%}
 {%- endif -%}
 {{ {
   'encryption_key': 'env.BIFROST_ENCRYPTION_KEY',
   'client': client,
+  'mcp': {'client_configs': bifrost_mcp_clients},
   'governance': {
     'auth_config': {
       'is_enabled': true,

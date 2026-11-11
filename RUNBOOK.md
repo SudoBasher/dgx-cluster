@@ -636,7 +636,8 @@ cd ansible && ansible-playbook observability.yml
 ```
 
 Split by role: obs-write runs Thanos receive, the compactor and Loki; obs-read
-runs Thanos query and store, Grafana and memcached. The split exists to keep
+runs Thanos query and store, and Grafana. (A memcached container also ran
+there until 2026-11-10, unused; section 25.) The split exists to keep
 bursty compaction away from user queries.
 
 Both self-enrol into the VPN first, then the stack comes up. Data goes to
@@ -1700,6 +1701,11 @@ change took effect without touching the admin UI. Its play confirmed the new
 link from inside the container (`vllm/qwen3.6-35b-a3b` listed through
 Bifrost).
 
+Correction, 2026-11-09: this was wrong, and chats did not go through Bifrost.
+The database had stored the direct vLLM URL at 09:00 UTC that morning, and the
+play's link check used the container's env rather than what Open WebUI
+actually reads. Section 24 has the fix.
+
 ### opencode against the gateway
 
 Tested from desktop2 with opencode 2.2.6, using a throwaway project config and
@@ -1709,3 +1715,398 @@ returned `pong`, and Bifrost logged it under `desktop2-opencode` with
 `app=OpenCode`. The client config is in `ACCESS.md`.
 
 ---
+
+## 24. Open WebUI really through Bifrost, and per-request tags `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-owui-dbsync-userheaders-20261109.log
+```
+
+2026-11-09. Chats in spark1's Open WebUI showed up in Grafana but never in
+Bifrost's logs, while opencode's showed up in both. The Grafana numbers were
+vLLM's own metrics, which count every request whatever its route. Open WebUI
+was still talking to vLLM directly.
+
+### Cause
+
+With `ENABLE_PERSISTENT_CONFIG=True`, Open WebUI v0.13 stores one row per
+setting in the `config` table of `webui.db` (columns `key`, `value`,
+`updated_at`) and reads from there after the first launch. Every row on spark1
+had `updated_at` 2026-11-08 09:00:25 UTC, from the deploy that moved Open
+WebUI to spark1, before the switch to Bifrost at 09:51. So the database held:
+
+| Key | Stored value | Env value |
+|---|---|---|
+| `openai.api_base_urls` | `["http://host.docker.internal:8000/v1"]` | `http://host.docker.internal:4000/v1` |
+| `openai.api_keys` | the `openwebui` vLLM key | the `spark1-openwebui` virtual key |
+| `ui.default_models` | `"qwen3.6-35b-a3b"` | `vllm/qwen3.6-35b-a3b` |
+
+*Table 24.1. Open WebUI's database against its environment, before the fix.*
+
+The env was right, which is why the play's link check passed: it read
+`OPENAI_API_*` from the env, not from the database. Bifrost's container log
+had 28 `POST /v1/chat/completions` in the 38 hours before the fix, all from
+opencode.
+
+### Fix
+
+The `openwebui` role now runs `files/sync_connection.py` inside the container
+after every start. It copies the env's URLs, keys and default model into those
+three rows and restarts Open WebUI if anything changed. It prints only
+`updated <keys>` or `in sync`, never values. Other admin settings still belong
+to the database.
+
+### Per-request tags
+
+Bifrost stores any `x-bf-lh-<name>` request header in the log entry's
+metadata as `<name>`, with no gateway config. It doesn't log the client IP,
+but it does log the User-Agent.
+
+| Client | Change | Metadata |
+|---|---|---|
+| Open WebUI | `owui_extra_env` in `host_vars/spark1.yml`: `ENABLE_FORWARD_USER_INFO_HEADERS=True`, with the user name, id, role and chat-id headers renamed to `x-bf-lh-owui-*` | `owui-user`, `owui-user-id`, `owui-role`, `owui-chat-id` |
+| opencode (desktop2) | `"headers": { "x-bf-lh-client-host": "desktop2" }` under `providers.bifrost` in `~/.config/opencode/opencode.jsonc` | `client-host` |
+
+*Table 24.2. Who tags what. The email header keeps its default name, which
+Bifrost doesn't record.*
+
+The header names come from `/app/backend/open_webui/env.py` in the v0.13.0
+image (`FORWARD_USER_INFO_HEADER_USER_NAME` and friends,
+`FORWARD_SESSION_INFO_HEADER_CHAT_ID`). opencode 2.2.6 takes a
+provider-level `headers` object.
+
+### Verify
+
+- The play: `failed=0`. The sync and the restart after it both reported
+  `changed`, and `Report` gave backend `http://host.docker.internal:4000/v1`
+  serving `vllm/qwen3.6-35b-a3b`. A second run (`ansible-playbook site.yml
+  --limit spark1`) reported the sync `ok`, with no restart.
+- The database now holds the Bifrost URL, a `sk-bf-` key and
+  `vllm/qwen3.6-35b-a3b`.
+- A test request from inside the Open WebUI container with the virtual key and
+  two `x-bf-lh-` headers came back `pong`. It was logged under
+  `spark1-openwebui` with metadata `{"owui-chat-id": "test-chat", "owui-user": "lh-test"}`.
+  That test entry stays in Bifrost's log.
+- `opencode run --standalone` from a throwaway config with the header returned
+  `pong`. It was logged under `desktop2-opencode`, `app=OpenCode`, with
+  metadata `{"client-host": "desktop2-test"}`.
+
+### Things to know
+
+- Chats started before the fix name the model `qwen3.6-35b-a3b`. Through
+  Bifrost it is `vllm/qwen3.6-35b-a3b`, so continuing an old chat may need the
+  model picked again.
+- The real opencode config was edited in place. The background server reads
+  it only at start, so `opencode service restart` is needed before its
+  requests carry `client-host`.
+- The `model_server` image pull reported `changed` on this run, but the
+  `v0.33.0` image ID didn't change and vLLM wasn't restarted (up 38h after the
+  run).
+
+### opencode's own headers
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-bifrost-logging-headers-20261109.log
+```
+
+Bifrost logs every opencode request with the same User-Agent,
+`opencode/latest/2.2.6/cli`, whether it came from the terminal or the desktop
+app. Both talk to one background server, and the server sends the model
+requests. To see what else opencode sends, `opencode run --standalone` was
+pointed at a local stub server on `127.0.0.1:18999` that printed the request
+headers. Besides the User-Agent and key it sent `x-opencode-client: cli`, a
+session id under four names (`x-opencode-session`, `x-opencode-session-id`,
+`x-session-id`, `x-session-affinity`), `x-opencode-project`, and the trace
+headers `traceparent` and `b3`.
+
+The `bifrost` role gained `bifrost_logging_headers` (default `[]`), rendered
+into `client.logging_headers` in `config.json`. spark1 lists all eight
+headers. The trace headers are there so logs can be joined to OTel traces
+later. The config change restarted Bifrost, and `GET /api/config` then showed
+all eight under `client_config.logging_headers`.
+
+A terminal request (`opencode run --standalone`, global config) was logged
+under `desktop2-opencode` with metadata `x-opencode-client: cli`, the session
+id under all four names, the project hash, both trace ids and
+`client-host: desktop2`.
+
+The desktop app doesn't help either. A prompt from it (2026-11-10 00:14 UTC,
+after `opencode service restart`) was logged with `x-opencode-client: cli`,
+the same as the terminal. The background server sets the header itself, so in
+opencode 2.2.6 nothing in a request says which front end it came from. Only
+the session id differs, and only per session.
+
+Open WebUI chats from the browser now log too, under `spark1-openwebui` with
+user agent `Python/3.12 aiohttp/3.14.5` and metadata `owui-user`,
+`owui-user-id`, `owui-role` and `owui-chat-id`. Title and tag generation
+requests carry no `owui-chat-id`.
+
+## 25. Repo audit fixes `[spark1, spark2, obs-read]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-audit-fixes-20261110.log
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-audit-fixes-20261110.log
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-allowlist-cleanup-20261110.log
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-allowlist-cleanup-20261110.log
+cd ansible && ansible-playbook observability.yml --limit obs-read --diff 2>&1 | tee ../logs/observability-obs-read-drop-memcached-20261110.log
+cd ansible && ansible-playbook netbird-access.yml --check 2>&1 | tee ../logs/netbird-access-check-20261110.log
+```
+
+2026-11-10. Eight findings from a review of the whole repo, all fixed in the
+same pass. The first was live and confirmed before the fix: the lab LAN could
+reach vLLM and Bifrost.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | vLLM (8000) and Bifrost (4000) answered on IPv6 link-local from the lab LAN, past the IPv4-only allowlist | Both publish on `0.0.0.0` only |
+| 2 | Nothing checked the allowlist after a run | `port_allowlist` verify step: no IPv6 listener, exactly one rule set |
+| 3 | `host_key_checking = False` | `True`; every host is in `.ssh/known_hosts` |
+| 4 | `netbird_config` only created, never updated | Policies, routes and setup-key groups are rewritten when they drift |
+| 5 | memcached on obs-read, used by nothing, open on `0.0.0.0:11211` | Removed |
+| 6 | `bin/vllm-watch` read `vllm:gpu_cache_usage_perc`, gone since vLLM's rename | Reads `vllm:kv_cache_usage_perc` |
+| 7 | The image pull reported `changed` every run; `ms_image` defaulted to `:latest` | Changed only on a real download; empty or `:latest` fails the play |
+| 8 | Two copies of the allowlist script and unit | One role, `roles/port_allowlist`, used by `model_server` and `bifrost` |
+
+*Table 25.1. Findings and fixes. Details of each are in `ansible/README.md`
+(Source allowlist, Layout) and `CLOUD_ARCHITECTURE.md`.*
+
+### The IPv6 path
+
+From desktop2 on the lab LAN (`eno2`, 10.255.128.0/20), before the fix:
+
+| Request | Result |
+|---|---|
+| `http://10.255.129.236:4000/health` (IPv4) | timeout, dropped by `bifrost-acl` |
+| `http://[fe80::d9ff:4a0f:1c1:fc55%eno2]:8000/health` | `200` |
+| `http://[fe80::d9ff:4a0f:1c1:fc55%eno2]:4000/health` | `200` |
+
+*Table 25.2. spark1 from the lab LAN. `ss -ltn` showed docker-proxy on both
+`0.0.0.0` and `[::]` for 8000, 4000 and 3001.*
+
+docker-proxy accepted the IPv6 connection and opened its own IPv4 connection
+to the container from `172.17.0.1`, which is inside the allowed
+`172.16.0.0/12`. After the fix both requests time out, `ss` shows only
+`0.0.0.0:8000` and `0.0.0.0:4000`, and the VPN path
+(`http://100.123.96.149:8000/health`) still returns `200`. Open WebUI's 3001
+still listens on `[::]` too; it has no allowlist and is meant to be reachable.
+
+### Problem found on the way: the allowlist never removed old rules
+
+The first run of the new verify step showed 24 tagged rules on spark1 and 14
+on spark2, where 5 and 7 were expected. The cleanup step grepped for
+`--comment "vllm-acl"`, but `iptables-save` prints the comment unquoted when
+it has no spaces (`--comment vllm-acl`), so nothing was ever deleted and each
+reapply added another full set. A CIDR removed from the list would have kept
+its `RETURN` rule. The grep now matches both forms, and the verify step fails
+unless the count is exactly the CIDR count plus two. The rerun brought both
+nodes to one set.
+
+### Verify
+
+- spark1 and spark2: `failed=0`, both verify steps pass. A second spark1 run
+  reported `changed=0`.
+- spark1 vLLM restarted once, for the unit's `--publish` change, and Bifrost
+  restarted once; the image ID stayed `d825baf9ce4b` (`v0.33.0`).
+- obs-read: memcached is gone, nothing listens on 11211, Grafana's
+  `/api/health` returns `database: ok`.
+- NetBird: `--check` reported `changed=0` against the live server. With
+  `teammates-to-grafana` given an extra port as a test override, the policy
+  task selected it for a `PUT`, so drift is detected. The playbook wasn't run
+  for real; in this session the permission check blocked it, and with no
+  drift it would have changed nothing.
+- `vllm-watch`: the new pattern turns a sample `kv_cache_usage_perc 0.253`
+  line into `kv=25.3%`. The nodes were idle, so the live view showed 0.0%.
+
+### Things to know
+
+- After rebuilding a node, its host key must be replaced in
+  `.ssh/known_hosts` by hand, or every play against it fails (see
+  `ansible/README.md`, Layout).
+- A node's `host_vars` must now set `ms_image` to a pinned tag.
+- `netbird_config` warns about policies enabled in NetBird but missing from
+  the list, and leaves them alone.
+
+## 26. HTTPS for Bifrost and Gmail through MCP `[spark1]` (Gmail in progress)
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-mcp-scaffold-20261110.log
+```
+
+2026-11-10. Goal: Gmail tools in opencode and Open WebUI, each person on their
+own Google account, every call through Bifrost, and clients on HTTPS. The
+design is in `ansible/README.md` (HTTPS for Bifrost; Gmail through Bifrost).
+
+### Done
+
+- Roles `tls_proxy` and `workspace_mcp`, the Bifrost settings they need
+  (`bifrost_external_url`, `bifrost_docker_network`, `bifrost_mcp_clients`,
+  `bifrost_vk_mcp_grants`), and `terraform/bifrost.tf`.
+- A personal virtual key `vk-sudobasher` in `.secrets/bifrost.yml`, live in
+  Bifrost. The run above restarted Bifrost once (new key, empty `mcp`
+  section) and finished `failed=0`.
+- `ghcr.io/taylorwilsdon/google_workspace_mcp:2.4.0` pulled on spark1
+  (arm64). Asked from inside the image, read-only Gmail mode requires
+  `gmail.readonly`, `userinfo.email`, `userinfo.profile` and `openid`.
+- HTTPS and Gmail are switched on in `host_vars/spark1.yml` by the presence of
+  their secrets, so a run without them leaves both off.
+
+### Steps that need a person
+
+1. **Terraform** (needs a fresh MFA session for `isc-eng-hpcresearch-dev`,
+   which `bin/aws-mfa-session` renews for 36 hours):
+
+   ```bash
+   bin/aws-mfa-session
+   cd terraform && tofu plan && tofu apply
+   ```
+
+   Adds the `bifrost` A record and the `dgx-cluster-bifrost-acme` IAM user.
+
+2. **Route53 key for certbot**, created outside Terraform so the secret never
+   reaches state:
+
+   ```bash
+   aws iam create-access-key --profile isc-eng-hpcresearch-dev \
+       --user-name dgx-cluster-bifrost-acme --output json \
+     | python3 -c 'import json,sys; k=json.load(sys.stdin)["AccessKey"]; print(f"acme_aws_access_key_id: \"{k[\"AccessKeyId\"]}\"\nacme_aws_secret_access_key: \"{k[\"SecretAccessKey\"]}\"")' \
+     >> .secrets/acme-route53.yml
+   ```
+
+   Then delete the two empty placeholder lines above them in that file.
+
+3. **Google OAuth client** in Google Cloud Console:
+   - Enable the Gmail API.
+   - Google Auth Platform: audience External, publishing status In
+     production. The app is unverified, so the login shows a warning to
+     click through.
+   - Data access: `openid`, `.../auth/userinfo.email`,
+     `.../auth/userinfo.profile`, `.../auth/gmail.readonly`.
+   - Clients, Web application, authorized redirect URI
+     `https://bifrost.isc-spectro-sbx.click/api/oauth/callback`.
+   - Client id and secret into `.secrets/google-oauth.yml`.
+
+4. Rerun `site.yml --limit spark1`. Then verify the Gmail connection once in
+   Bifrost's dashboard (MCP Gateway, `gmail_personal`, Verify). That's a
+   one-time Google login Bifrost uses only to read the tool list.
+
+### HTTPS, done
+
+```bash
+bin/aws-mfa-session
+cd terraform && tofu apply -target=aws_route53_record.bifrost -target=aws_iam_user.bifrost_acme -target=aws_iam_user_policy.bifrost_acme 2>&1 | tee ../logs/tofu-apply-bifrost-20261110.log
+aws iam create-access-key --profile isc-eng-hpcresearch-dev --user-name dgx-cluster-bifrost-acme   # into .secrets/acme-route53.yml, not printed
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-tls-proxy-20261110-retry2.log
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-owui-https-20261110.log
+```
+
+`tofu apply` was **targeted on purpose**. The full plan also wanted to
+replace netbird-cp, obs-read and obs-write, because the Ubuntu AMI lookup now
+finds a newer image (`ami-065a2acd39a66257a` to `ami-0bec25ae844865e7d`, which
+forces replacement). That has nothing to do with this change and would
+rebuild the VPN control plane and both observability nodes. Until the
+instances ignore AMI changes, every apply here needs `-target` or a
+deliberate decision to rebuild.
+
+Two role fixes on the way:
+
+- `ansible_managed` is defined only inside templates, so `copy` content that
+  used it failed with "'ansible_managed' is undefined". It's now the literal
+  text, as the other roles write it.
+- Ubuntu 24.04's nginx is 1.24, which rejects `http2 on;` (added in 1.25.1).
+  The site uses `listen 443 ssl http2;` instead.
+
+| Check | Result |
+|---|---|
+| `https://bifrost.isc-spectro-sbx.click/health` from desktop2 over the VPN | `200`, certificate verified |
+| The same name pinned to spark1's lab-LAN address | `403` from nginx |
+| spark1's IPv6 link-local address on 443 | no connection |
+| `certbot renew --dry-run` with the renewal credentials | succeeded, so the IAM policy covers renewal |
+| Certificate | valid until 2027-02-08; `certbot.timer` renews it |
+| Open WebUI container to `https://bifrost.isc-spectro-sbx.click/v1/models` | `200`, `vllm/qwen3.6-35b-a3b` |
+
+*Table 26.1. The HTTPS path.*
+
+Model traffic moved to HTTPS the same day:
+
+- Open WebUI: `owui_llm_base_url` in `host_vars/spark1.yml`, which the
+  connection sync wrote to its database.
+- opencode on desktop2: `providers.bifrost.settings.baseURL` in
+  `~/.config/opencode/opencode.jsonc`. `opencode run --standalone` answered
+  `pong` through it. The background server picks it up after `opencode
+  service restart`.
+
+### Gmail MCP deployed
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-gmail-mcp-20261110-retry.log
+```
+
+The Google OAuth client went into `.secrets/google-oauth.yml`: an External app
+in production, unverified, with the four scopes above and the Bifrost callback
+as its only redirect URI. Google asked for a home page and privacy policy
+before it would publish. `https://bifrost.isc-spectro-sbx.click` and `.../privacy`
+were entered, with `isc-spectro-sbx.click` as an authorized domain. Google
+checks those only when an app is submitted for verification.
+
+The first run failed. The server crash-looped on `[Errno 30] Read-only file
+system: '/home/app/.local'`, because FastMCP writes a key-value store there
+even in stateless mode. The container stays read-only, with an in-memory
+`--tmpfs /home/app/.local` owned by the image's `app` user (uid 1000).
+
+| Check | Result |
+|---|---|
+| `GET /api/mcp/clients` | `gmail_personal`, `per_user_oauth`, state `pending_verification`, granted to `vk-sudobasher` only |
+| Bifrost container to `http://workspace-mcp:8000/mcp` | `405` to a GET, so the server is reachable on the `mcp` network |
+| `tools/list` on `https://bifrost.isc-spectro-sbx.click/mcp` with `vk-sudobasher` | `{"tools":[]}`, with the key in `x-bf-vk` or `Authorization: Bearer` |
+| The same with no key | `401`, "virtual key required to access mcp server" |
+
+*Table 26.2. Before verification. The tool list stays empty until the admin
+Verify step.*
+
+opencode on desktop2 got an `mcp.servers.bifrost` entry in
+`~/.config/opencode/opencode.jsonc` (see `ACCESS.md`), effective after
+`opencode service restart`.
+
+On startup Bifrost syncs a public MCP catalog from
+`https://getbifrost.ai/mcp-library` (126 entries), its only outbound call
+besides vLLM and the MCP servers. It sends nothing from this install.
+
+### Verified, and opencode uses Gmail
+
+Bifrost v2.5.0's dashboard has no Verify button where the docs put it, so the
+admin step went through the API: `POST /api/mcp/client/<id>/initiate-verification`
+returned a Google `authorize_url`. Its parameters were the Bifrost callback,
+the four scopes, `access_type=offline`, `prompt=consent` and PKCE S256. After
+approving it in a browser, opencode in the terminal and the desktop app both
+searched Gmail through `vk-sudobasher`.
+
+### Known issue: vLLM engine crash, 2026-11-11 01:56 UTC
+
+Open WebUI showed `dial tcp 172.17.0.1:8000: connect: connection refused`.
+That's Bifrost failing to reach vLLM, which was restarting. The engine had
+died with `RuntimeError: CUDA error: CUBLAS_STATUS_INTERNAL_ERROR when calling
+cublasGemmEx(...)` in the MoE router's bf16 GEMM (`gate_linear.py`). That
+ended in `EngineDeadError`, and systemd restarted the container. It served
+again at 01:58:10, about 1.5 minutes later.
+
+| Evidence | Value |
+|---|---|
+| `MemAvailable` on spark1, 01:54–01:56 | 49.4 GiB, steady, so not out of memory |
+| Kernel log | no Xid, no OOM kill |
+| `num_requests_running` / KV cache use | 0–1, ~0%, so not load |
+| Request in flight | an Open WebUI non-streaming request, started 01:55:48, failed at 01:56:26 after 38 s |
+
+*Table 26.3. The crash. Content logging is off, so the request's input isn't
+known.*
+
+The cause is not known. It isn't memory, load or the network, and it isn't
+the same as section 20's prefix-cache crash (prefix caching is off). If it
+happens again, compare the in-flight request's size and type first. A request
+from inside the Open WebUI container after the restart returned `Pong!`.
+
+### Still to do
+
+- Open WebUI: an MCP connection that gives each user their own identity
+  (OAuth 2.1 against Bifrost).
+- Drop the VPN range from Bifrost's port-4000 allowlist, so HTTPS is the only
+  way in from outside spark1.

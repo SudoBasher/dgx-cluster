@@ -1,0 +1,152 @@
+---
+## Disabled: tear down cleanly
+
+- name: Tear down the Workspace MCP server
+  when: not wmcp_enabled
+  become: true
+  block:
+    - name: Stop and disable the service
+      ansible.builtin.systemd:
+        name: "{{ wmcp_service_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    # docker rm -f exits 0 either way and prints the name only when it removed
+    # a container, so key changed off the output.
+    - name: Remove any lingering container
+      ansible.builtin.command:
+        cmd: docker rm -f {{ wmcp_container_name }}
+      register: _wmcp_rm
+      changed_when: _wmcp_rm.stdout | length > 0
+      failed_when: false
+
+    - name: Remove the unit file
+      ansible.builtin.file:
+        path: /etc/systemd/system/{{ wmcp_service_name }}.service
+        state: absent
+      notify: reload systemd for workspace-mcp
+
+    - name: Clear any failed state left by the stop
+      ansible.builtin.command:
+        cmd: systemctl reset-failed {{ wmcp_service_name }}
+      changed_when: false
+      failed_when: false
+
+## Enabled: deploy
+
+- name: Deploy the Workspace MCP server
+  when: wmcp_enabled
+  block:
+
+    ## Preconditions
+    - name: Fail without the Google OAuth client id
+      ansible.builtin.assert:
+        that: google_oauth_client_id | default('') | length > 0
+        fail_msg: >-
+          google_oauth_client_id is unset. Put it in .secrets/google-oauth.yml
+          (RUNBOOK section 26).
+
+    ## Directories
+    - name: Ensure the base directory exists
+      become: true
+      ansible.builtin.file:
+        path: "{{ wmcp_base_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    ## JWT signing key: generated once and kept
+    - name: Generate the JWT signing key once
+      become: true
+      ansible.builtin.shell:
+        cmd: umask 077 && openssl rand -hex 32 > {{ wmcp_base_dir }}/jwt_signing_key
+        creates: "{{ wmcp_base_dir }}/jwt_signing_key"
+
+    - name: Read the JWT signing key
+      become: true
+      ansible.builtin.slurp:
+        src: "{{ wmcp_base_dir }}/jwt_signing_key"
+      register: _wmcp_jwt_raw
+
+    - name: Expose the JWT signing key to the template
+      ansible.builtin.set_fact:
+        _wmcp_jwt_key: "{{ _wmcp_jwt_raw.content | b64decode | trim }}"
+      no_log: true
+
+    ## Network shared with Bifrost
+    - name: Check for the {{ wmcp_network }} Docker network
+      ansible.builtin.command:
+        cmd: docker network inspect {{ wmcp_network }}
+      register: _wmcp_net
+      changed_when: false
+      failed_when: false
+
+    - name: Create the {{ wmcp_network }} Docker network
+      ansible.builtin.command:
+        cmd: docker network create {{ wmcp_network }}
+      when: _wmcp_net.rc != 0
+      changed_when: true
+
+    ## Image
+    - name: Pull the Workspace MCP image
+      ansible.builtin.command:
+        cmd: docker pull {{ wmcp_image }}
+      register: _wmcp_pull
+      changed_when: "'Downloaded newer image' in _wmcp_pull.stdout"
+
+    ## Environment file and unit
+    - name: Write the environment file
+      become: true
+      ansible.builtin.template:
+        src: workspace-mcp.env.j2
+        dest: "{{ wmcp_base_dir }}/workspace-mcp.env"
+        owner: root
+        group: root
+        mode: "0600"
+      register: _wmcp_env
+      no_log: true
+
+    - name: Install the systemd unit
+      become: true
+      ansible.builtin.template:
+        src: workspace-mcp.service.j2
+        dest: /etc/systemd/system/{{ wmcp_service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: _wmcp_unit
+      notify: reload systemd for workspace-mcp
+
+    - name: Apply unit changes now
+      ansible.builtin.meta: flush_handlers
+
+    ## Start
+    - name: Enable and start the Workspace MCP server
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ wmcp_service_name }}"
+        enabled: true
+        state: >-
+          {{ 'restarted' if (_wmcp_unit.changed or _wmcp_env.changed) else 'started' }}
+
+    ## Verify
+    # Nothing is published on the host, so the check runs inside the container.
+    - name: Wait for the server to report healthy
+      ansible.builtin.command:
+        cmd: docker exec {{ wmcp_container_name }} curl -fsS http://localhost:{{ wmcp_port }}/health
+      register: _wmcp_health
+      until: _wmcp_health.rc == 0
+      retries: "{{ (wmcp_health_timeout | int / 5) | int }}"
+      delay: 5
+      changed_when: false
+      when: wmcp_wait_for_health
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Workspace MCP on {{ inventory_hostname }} at
+          http://{{ wmcp_container_name }}:{{ wmcp_port }}/mcp on Docker network
+          {{ wmcp_network }}; tools {{ wmcp_tools }}{{ ' (read-only)' if wmcp_read_only else '' }}
+      when: wmcp_wait_for_health

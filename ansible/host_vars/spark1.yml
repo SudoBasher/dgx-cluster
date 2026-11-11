@@ -105,20 +105,99 @@ owui_name: spark1
 # the UI are counted per client alongside opencode and anything else on the
 # gateway. Model ids carry Bifrost's provider prefix. Uses its own virtual key,
 # spark1-openwebui, from .secrets/bifrost.yml.
-owui_llm_base_url: "http://host.docker.internal:4000/v1"
+# Over HTTPS since 2026-11-10, through the same nginx as every other client.
+# The container resolves the public name to spark1's VPN address and
+# connects from the Docker bridge, which the nginx allowlist admits.
+owui_llm_base_url: "https://bifrost.isc-spectro-sbx.click/v1"
 owui_llm_api_key: >-
   {{ bifrost_virtual_keys | selectattr('id', 'equalto', 'vk-spark1-openwebui')
      | map(attribute='value') | first }}
 owui_default_model: vllm/qwen3.6-35b-a3b
 
+# Tag each request with who sent it. Bifrost copies any x-bf-lh-<name> header
+# into the log entry's metadata as <name>, with no gateway config. Email is
+# left on its default header name, which Bifrost does not record.
+owui_extra_env:
+  ENABLE_FORWARD_USER_INFO_HEADERS: "True"
+  FORWARD_USER_INFO_HEADER_USER_NAME: x-bf-lh-owui-user
+  FORWARD_USER_INFO_HEADER_USER_ID: x-bf-lh-owui-user-id
+  FORWARD_USER_INFO_HEADER_USER_ROLE: x-bf-lh-owui-role
+  FORWARD_SESSION_INFO_HEADER_CHAT_ID: x-bf-lh-owui-chat-id
+
 ## Gateway: Bifrost
 # One OpenAI-compatible endpoint for opencode and other clients, with a virtual
 # key per client so usage can be told apart in metrics and logs. Clients use
-#   base URL  http://100.123.96.149:4000/v1   (over the VPN)
+#   base URL  https://bifrost.isc-spectro-sbx.click/v1   (over the VPN)
 #   model     vllm/qwen3.6-35b-a3b
 #   key       a bifrost_virtual_keys value from .secrets/bifrost.yml
 bifrost_enabled: true
 bifrost_vllm_model: qwen3.6-35b-a3b
+
+# Headers opencode 2.2.6 sends with every model request (captured 2026-11-09).
+# x-opencode-client is "cli" from both the terminal and the desktop app (the
+# shared background server sets it); the session and project ids group
+# requests; traceparent and b3 join logs to OTel traces.
+bifrost_logging_headers:
+  - x-opencode-client
+  - x-opencode-session
+  - x-opencode-session-id
+  - x-session-id
+  - x-session-affinity
+  - x-opencode-project
+  - traceparent
+  - b3
+
+## Gateway over HTTPS
+# https://bifrost.isc-spectro-sbx.click: a public DNS name for spark1's VPN
+# address (terraform/bifrost.tf), with nginx and a Let's Encrypt certificate in
+# front of port 4000 (roles/tls_proxy). Switched on once the Route53 key is in
+# .secrets/acme-route53.yml, so a run without it still deploys everything else.
+_tls_ready: "{{ acme_aws_access_key_id | default('') | length > 0 }}"
+tlsp_enabled: "{{ _tls_ready }}"
+tlsp_fqdn: bifrost.isc-spectro-sbx.click
+tlsp_upstream: "http://127.0.0.1:{{ bifrost_port | default(4000) }}"
+bifrost_external_url: "{{ 'https://' ~ tlsp_fqdn if _tls_ready else '' }}"
+
+## MCP: Gmail through Bifrost
+# Bifrost logs each person into Google (per_user_oauth) and keeps their token
+# under their own virtual key; the Workspace MCP server (roles/workspace_mcp)
+# calls Gmail with whichever token a request carries. Read-only. Switched on
+# once the Google OAuth client is in .secrets/google-oauth.yml.
+_google_ready: "{{ google_oauth_client_id | default('') | length > 0 }}"
+wmcp_enabled: "{{ _google_ready }}"
+wmcp_tools: gmail
+wmcp_read_only: true
+bifrost_docker_network: "{{ 'mcp' if _google_ready else '' }}"
+
+# One Bifrost connection per Google account kind a person may log in with;
+# a second (gmail_work) would be another entry with the same server URL.
+# The scopes are exactly what the server requires in read-only Gmail mode.
+# access_type=offline gets a refresh token, prompt=consent makes Google issue
+# a new one even to someone who already granted access.
+_gmail_mcp_clients:
+  - name: gmail_personal
+    connection_type: http
+    connection_string: "http://{{ wmcp_container_name | default('workspace-mcp') }}:{{ wmcp_port | default(8000) }}/mcp"
+    auth_type: per_user_oauth
+    oauth_config:
+      client_id: env.BIFROST_GOOGLE_CLIENT_ID
+      client_secret: env.BIFROST_GOOGLE_CLIENT_SECRET
+      authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?access_type=offline&prompt=consent"
+      token_url: https://oauth2.googleapis.com/token
+      scopes:
+        - openid
+        - https://www.googleapis.com/auth/userinfo.email
+        - https://www.googleapis.com/auth/userinfo.profile
+        - https://www.googleapis.com/auth/gmail.readonly
+    tools_to_execute: ["*"]
+bifrost_mcp_clients: "{{ _gmail_mcp_clients if _google_ready else [] }}"
+
+# Deny by default: only these keys see the Gmail tools. vk-sudobasher is a
+# person, not a client; every client that person uses sends it for MCP.
+bifrost_vk_mcp_grants:
+  vk-sudobasher:
+    - mcp_client_name: gmail_personal
+      tools_to_execute: ["*"]
 
 # Scraped by the telemetry agent alongside vLLM; roles/telemetry_agent.
 tel_extra_scrape_jobs:

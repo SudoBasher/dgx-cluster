@@ -53,6 +53,11 @@ bifrost_vllm_allow_private_network: true
 # sometimes, secrets. Token counts, latency and cost are logged either way.
 bifrost_disable_content_logging: true
 
+# Request headers to copy into each log entry's metadata, by name
+# (case-insensitive). x-bf-lh-<name> headers are captured without being
+# listed here. Header values are stored even with content logging off.
+bifrost_logging_headers: []
+
 ## Metrics
 # On the open-source build /metrics needs the admin's Basic auth once
 # dashboard auth is on. Whitelisting it matches vLLM's own /metrics, which is
@@ -60,7 +65,37 @@ bifrost_disable_content_logging: true
 # config. The firewall below still limits who can reach the port.
 bifrost_metrics_unauthenticated: true
 
-## Network allowlist (DOCKER-USER), same model as vLLM's
+## HTTPS name
+# The https:// URL clients and browsers use (roles/tls_proxy terminates TLS in
+# front of the port above). Set as mcp_external_client_url, so per-user OAuth
+# redirect URIs are built from it rather than from each request's Host
+# header. Changing it after Google has the redirect URI registered breaks
+# every stored login.
+bifrost_external_url: ""
+
+## MCP gateway
+# Docker network to join, so Bifrost can reach MCP servers by container name
+# (roles/workspace_mcp). Empty keeps Docker's default bridge.
+bifrost_docker_network: ""
+
+# Upstream MCP servers, rendered verbatim as mcp.client_configs. Secrets go in
+# as env.VAR references only (see bifrost.env.j2). Names may not contain
+# hyphens: Bifrost uses the hyphen to split <client>-<tool>.
+bifrost_mcp_clients: []
+
+# Which virtual key may use which MCP server, by key id:
+#   vk-id: [{mcp_client_name: gmail_personal, tools_to_execute: ["*"]}]
+# Deny by default: a key with no entry sees no tools.
+bifrost_vk_mcp_grants: {}
+
+# Lets someone without the Bifrost admin login finish a per-user login: the
+# link Bifrost hands out carries a 15-minute token instead. Off, only the
+# admin's browser session could complete anyone's login.
+bifrost_mcp_temp_token_auth: true
+
+## Network allowlist (DOCKER-USER), same roles/port_allowlist as vLLM's
+# IPv4 only: the unit publishes on 0.0.0.0, and the play fails if the port
+# ever listens on IPv6.
 bifrost_restrict_network: true
 bifrost_allowed_cidrs:
   - 127.0.0.0/8

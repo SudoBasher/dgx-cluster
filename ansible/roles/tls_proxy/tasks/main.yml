@@ -1,0 +1,178 @@
+---
+## Disabled: remove the site, keep the certificate
+
+- name: Remove the TLS proxy
+  when: not tlsp_enabled
+  become: true
+  block:
+    - name: Remove the site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/tls-proxy.conf
+        state: absent
+      register: _tlsp_rm
+
+    - name: Stop nginx if it was serving the site
+      ansible.builtin.systemd:
+        name: nginx
+        state: stopped
+        enabled: false
+      when: _tlsp_rm.changed
+
+## Enabled: deploy
+
+- name: Deploy the TLS proxy
+  when: tlsp_enabled
+  become: true
+  block:
+
+    ## Preconditions
+    - name: Fail on missing settings or Route53 credentials
+      ansible.builtin.assert:
+        that:
+          - tlsp_fqdn | length > 0
+          - tlsp_upstream | length > 0
+          - acme_aws_access_key_id | default('') | length > 0
+          - acme_aws_secret_access_key | default('') | length > 0
+        fail_msg: >-
+          tls_proxy needs tlsp_fqdn, tlsp_upstream and .secrets/acme-route53.yml
+          (acme_aws_access_key_id, acme_aws_secret_access_key); RUNBOOK section 26.
+      no_log: true
+
+    ## Packages
+    - name: Install nginx and certbot with the Route53 plugin
+      ansible.builtin.apt:
+        name: [nginx, certbot, python3-certbot-dns-route53]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # The packaged default site listens on 80 and [::]:80. Nothing here needs
+    # port 80 (the challenge is DNS-01), and nothing may listen on IPv6.
+    - name: Remove the default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: reload nginx
+
+    ## Route53 credentials for certbot
+    # boto3 reads this file through AWS_SHARED_CREDENTIALS_FILE: passed to the
+    # first issue below, and set for the renewal timer by the drop-in after.
+    - name: Write the Route53 credentials
+      ansible.builtin.copy:
+        dest: "{{ tlsp_aws_credentials_file }}"
+        content: |
+          # Ansible managed - local edits will be overwritten
+          # IAM user {{ tlsp_fqdn }} ACME: may only write _acme-challenge TXT.
+          [default]
+          aws_access_key_id = {{ acme_aws_access_key_id }}
+          aws_secret_access_key = {{ acme_aws_secret_access_key }}
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Point the renewal service at those credentials
+      block:
+        - name: Create the certbot drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/certbot.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Install the certbot drop-in
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/certbot.service.d/route53.conf
+            content: |
+              # Ansible managed - local edits will be overwritten
+              [Service]
+              Environment=AWS_SHARED_CREDENTIALS_FILE={{ tlsp_aws_credentials_file }}
+            mode: "0644"
+          notify: reload systemd for tls_proxy
+
+    ## Certificate
+    # --deploy-hook is saved in the renewal config, so every renewal reloads
+    # nginx. Runs once; renewals come from certbot.timer.
+    - name: Issue the certificate
+      ansible.builtin.command:
+        argv:
+          - certbot
+          - certonly
+          - --dns-route53
+          - --domain
+          - "{{ tlsp_fqdn }}"
+          - --non-interactive
+          - --agree-tos
+          - --register-unsafely-without-email
+          - --deploy-hook
+          - systemctl reload nginx
+        creates: /etc/letsencrypt/live/{{ tlsp_fqdn }}/fullchain.pem
+      environment:
+        AWS_SHARED_CREDENTIALS_FILE: "{{ tlsp_aws_credentials_file }}"
+
+    - name: Ensure the renewal timer is on
+      ansible.builtin.systemd:
+        name: certbot.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    ## Site
+    - name: Install the site
+      ansible.builtin.template:
+        src: site.conf.j2
+        dest: /etc/nginx/sites-enabled/tls-proxy.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: reload nginx
+
+    - name: Check the nginx configuration
+      ansible.builtin.command:
+        cmd: nginx -t
+      changed_when: false
+
+    - name: Ensure nginx is running
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Apply site changes now
+      ansible.builtin.meta: flush_handlers
+
+    ## Verify
+    # --resolve sends the request to this host while checking the certificate
+    # against the real name, as a client would.
+    - name: Confirm HTTPS answers with a valid certificate
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -fsS
+          - -o
+          - /dev/null
+          - -w
+          - "%{http_code}"
+          - --resolve
+          - "{{ tlsp_fqdn }}:{{ tlsp_port }}:127.0.0.1"
+          - "https://{{ tlsp_fqdn }}:{{ tlsp_port }}/health"
+      register: _tlsp_curl
+      changed_when: false
+
+    - name: Confirm port {{ tlsp_port }} listens on IPv4 only
+      ansible.builtin.command:
+        cmd: ss -Hltn "sport = :{{ tlsp_port }}"
+      register: _tlsp_listen
+      changed_when: false
+      failed_when: _tlsp_listen.stdout_lines | select('search', '\[') | list | length > 0
+
+    - name: Read the certificate's expiry
+      ansible.builtin.command:
+        cmd: openssl x509 -noout -enddate -in /etc/letsencrypt/live/{{ tlsp_fqdn }}/fullchain.pem
+      register: _tlsp_expiry
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          https://{{ tlsp_fqdn }} -> {{ tlsp_upstream }} (HTTP {{ _tlsp_curl.stdout }}),
+          certificate {{ _tlsp_expiry.stdout }}

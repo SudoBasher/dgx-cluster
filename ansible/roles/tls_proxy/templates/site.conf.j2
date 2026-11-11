@@ -1,0 +1,48 @@
+{{ ansible_managed | comment }}
+# HTTPS for {{ tlsp_fqdn }}, proxied to {{ tlsp_upstream }}.
+# Regenerate with: ansible-playbook site.yml --limit {{ inventory_hostname }}
+
+## WebSocket upgrade, for the dashboard's live views
+map $http_upgrade $tlsp_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    ## Listener: IPv4 only. No [::] listen, so nothing reaches this over IPv6.
+    # "listen ... http2" rather than "http2 on;": Ubuntu 24.04 ships nginx
+    # 1.24, and the separate directive only arrived in 1.25.1.
+    listen {{ tlsp_port }} ssl http2;
+    server_name {{ tlsp_fqdn }};
+
+    ssl_certificate     /etc/letsencrypt/live/{{ tlsp_fqdn }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ tlsp_fqdn }}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    ## Source allowlist
+{% for cidr in tlsp_allowed_cidrs %}
+    allow {{ cidr }};
+{% endfor %}
+    deny all;
+
+    ## Proxy
+    client_max_body_size {{ tlsp_client_max_body_size }};
+
+    location / {
+        proxy_pass {{ tlsp_upstream }};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $tlsp_connection_upgrade;
+
+        # Streamed replies (SSE) must pass through as they're generated.
+        proxy_buffering         off;
+        proxy_request_buffering off;
+        proxy_read_timeout      {{ tlsp_proxy_timeout_seconds }}s;
+        proxy_send_timeout      {{ tlsp_proxy_timeout_seconds }}s;
+    }
+}

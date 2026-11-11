@@ -39,9 +39,11 @@ owui_llm_api_key: >-
 ## Persistence of admin settings
 # Open WebUI stores the connection settings above (and sign-up, default models
 # and most admin settings) in its database. The environment seeds them on the
-# first launch only; after that the database wins and changes here are ignored.
-# Setting this false makes the environment win on every start, at the cost of
-# admin-UI changes being lost on restart.
+# first launch only; after that the database wins. The exception is the LLM
+# URL, key and default model: the role copies those three from the env into
+# the database after every start (files/sync_connection.py), so they follow
+# Ansible. Setting this false makes the environment win for every setting, at
+# the cost of admin-UI changes being lost on restart.
 owui_persistent_config: true
 
 ## Anything else, as KEY: value

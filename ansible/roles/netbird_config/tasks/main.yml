@@ -19,6 +19,8 @@
     headers: "{{ _nb_headers }}"
   register: _nb_groups
   changed_when: false
+  # A read: also runs under --check, so check mode can show what would change.
+  check_mode: false
 
 - name: Create missing groups
   ansible.builtin.uri:
@@ -37,6 +39,8 @@
     headers: "{{ _nb_headers }}"
   register: _nb_groups
   changed_when: false
+  # A read: also runs under --check, so check mode can show what would change.
+  check_mode: false
 
 - name: Map group name to id
   ansible.builtin.set_fact:
@@ -50,6 +54,8 @@
     headers: "{{ _nb_headers }}"
   register: _nb_keys
   changed_when: false
+  # A read: also runs under --check, so check mode can show what would change.
+  check_mode: false
 
 # body is one pre-rendered JSON string, not a YAML dict of per-key Jinja
 # expressions. The dict form silently truncates the request the moment any
@@ -88,6 +94,26 @@
   loop: "{{ _nb_new_keys.results | default([]) | selectattr('json', 'defined') | list }}"
   loop_control: { label: "{{ item.json.name | default('?') }}" }
 
+# Only the groups are reconciled. Revocation is sent back unchanged, and an
+# expired key stays expired: re-enabling a key someone revoked on purpose
+# would be worse than drift.
+- name: Update setup keys whose groups differ from the list
+  ansible.builtin.uri:
+    url: "{{ nbcfg_api }}/setup-keys/{{ _have_key.id }}"
+    method: PUT
+    headers: "{{ _nb_headers }}"
+    body_format: json
+    body: "{{ {'revoked': _have_key.revoked | bool, 'auto_groups': _want_groups} | to_json }}"
+    status_code: [200]
+  loop: "{{ nbcfg_setup_keys }}"
+  loop_control: { label: "{{ item.name }}" }
+  vars:
+    _have_key: "{{ _nb_keys.json | selectattr('name', 'equalto', item.name) | first | default({}) }}"
+    _want_groups: "{{ item.groups | map('extract', _nb_gid) | list }}"
+  when:
+    - _have_key.id is defined
+    - (_have_key.auto_groups | default([]) | sort) != (_want_groups | sort)
+
 # -------------------------------------------------------------- policies --
 
 - name: Read existing policies
@@ -96,30 +122,79 @@
     headers: "{{ _nb_headers }}"
   register: _nb_pol
   changed_when: false
+  # A read: also runs under --check, so check mode can show what would change.
+  check_mode: false
 
-- name: Create missing policies
+# Creates a listed policy that's missing, and rewrites one whose rule differs
+# from the list (protocol, direction, ports, groups, enabled). Until
+# 2026-11-10 this only created, so editing a listed policy changed nothing.
+# PUT replaces the whole policy, so the full desired policy is sent.
+- name: Create or update policies to match the list
   ansible.builtin.uri:
-    url: "{{ nbcfg_api }}/policies"
-    method: POST
+    url: "{{ nbcfg_api }}/policies{{ ('/' ~ _have_pol.id) if _have_pol.id is defined else '' }}"
+    method: "{{ 'PUT' if _have_pol.id is defined else 'POST' }}"
     headers: "{{ _nb_headers }}"
     body_format: json
-    body:
-      name: "{{ item.name }}"
-      description: "{{ item.name }}"
-      enabled: true
-      rules:
-        - name: "{{ item.name }}"
-          enabled: true
-          action: accept
-          protocol: "{{ item.protocol }}"
-          bidirectional: "{{ item.bidirectional }}"
-          sources: ["{{ _nb_gid[item.src] }}"]
-          destinations: ["{{ _nb_gid[item.dst] }}"]
-          ports: "{{ item.ports | default(omit) }}"
+    body: >-
+      {{ {
+        'name': item.name,
+        'description': item.name,
+        'enabled': true,
+        'rules': [{
+          'name': item.name,
+          'enabled': true,
+          'action': 'accept',
+          'protocol': item.protocol,
+          'bidirectional': item.bidirectional | bool,
+          'sources': [_nb_gid[item.src]],
+          'destinations': [_nb_gid[item.dst]]
+        } | combine({'ports': item.ports} if item.ports is defined else {})]
+      } | to_json }}
     status_code: [200, 201]
   loop: "{{ nbcfg_policies }}"
   loop_control: { label: "{{ item.name }}" }
-  when: item.name not in (_nb_pol.json | map(attribute='name') | list)
+  vars:
+    _have_pol: "{{ _nb_pol.json | selectattr('name', 'equalto', item.name) | first | default({}) }}"
+    _have_rule: "{{ (_have_pol.rules | default([{}], true))[0] }}"
+    _have: >-
+      {{ {
+        'enabled': _have_pol.enabled | default(false),
+        'rules': _have_pol.rules | default([]) | length,
+        'rule_enabled': _have_rule.enabled | default(false),
+        'action': _have_rule.action | default(''),
+        'protocol': _have_rule.protocol | default(''),
+        'bidirectional': _have_rule.bidirectional | default(false),
+        'ports': _have_rule.ports | default([], true) | map('string') | list,
+        'sources': _have_rule.sources | default([], true) | map(attribute='name') | list,
+        'destinations': _have_rule.destinations | default([], true) | map(attribute='name') | list
+      } }}
+    _want: >-
+      {{ {
+        'enabled': true,
+        'rules': 1,
+        'rule_enabled': true,
+        'action': 'accept',
+        'protocol': item.protocol,
+        'bidirectional': item.bidirectional | bool,
+        'ports': item.ports | default([]) | map('string') | list,
+        'sources': [item.src],
+        'destinations': [item.dst]
+      } }}
+  when: _have_pol.id is not defined or _have != _want
+
+# Not removed automatically: a policy made by hand in the dashboard may be
+# deliberate. Shown so it can be added to the list or deleted.
+- name: Warn about enabled policies that aren't in the list
+  ansible.builtin.debug:
+    msg: >-
+      Enabled in NetBird but not in nbcfg_policies, so not managed here:
+      {{ _nb_extra | join(', ') }}
+  vars:
+    _nb_extra: >-
+      {{ _nb_pol.json | selectattr('enabled') | map(attribute='name')
+         | reject('in', nbcfg_policies | map(attribute='name') | list + ['Default'])
+         | list }}
+  when: _nb_extra | length > 0
 
 # ---------------------------------------------------------------- routes --
 
@@ -130,34 +205,53 @@
   register: _nb_pr
   loop: [peers, routes]
   changed_when: false
+  # A read: also runs under --check, so check mode can show what would change.
+  check_mode: false
 
 - name: Map peer name to id
   ansible.builtin.set_fact:
     _nb_pid: "{{ dict(_nb_pr.results[0].json | map(attribute='name') | zip(_nb_pr.results[0].json | map(attribute='id'))) }}"
     _nb_existing_routes: "{{ _nb_pr.results[1].json }}"
 
-- name: Create missing routes
+# One route per (network_id, peer). Created when missing, rewritten when its
+# network, distribution groups, masquerade, metric or enabled flag differ.
+# An existing route keeps its description.
+- name: Create or update routes to match the list
   ansible.builtin.uri:
-    url: "{{ nbcfg_api }}/routes"
-    method: POST
+    url: "{{ nbcfg_api }}/routes{{ ('/' ~ _have_route.id) if _have_route.id is defined else '' }}"
+    method: "{{ 'PUT' if _have_route.id is defined else 'POST' }}"
     headers: "{{ _nb_headers }}"
     body_format: json
-    body:
-      description: "{{ item.0.network_id }} via {{ item.1 }}"
-      network_id: "{{ item.0.network_id }}"
-      network: "{{ item.0.network }}"
-      peer: "{{ _nb_pid[item.1] }}"
-      enabled: true
-      groups: "{{ item.0.distribution_groups | map('extract', _nb_gid) | list }}"
-      masquerade: "{{ item.0.masquerade }}"
-      metric: "{{ item.0.metric }}"
+    body: >-
+      {{ {
+        'description': _have_route.description | default(item.0.network_id ~ ' via ' ~ item.1),
+        'network_id': item.0.network_id,
+        'network': item.0.network,
+        'peer': _nb_pid[item.1],
+        'enabled': true,
+        'groups': _want_groups,
+        'masquerade': item.0.masquerade | bool,
+        'metric': item.0.metric | int
+      } | to_json }}
     status_code: [200, 201]
   loop: "{{ nbcfg_routes | subelements('peers') }}"
   loop_control: { label: "{{ item.0.network_id }} via {{ item.1 }}" }
+  vars:
+    _have_route: >-
+      {{ _nb_existing_routes | selectattr('network_id', 'equalto', item.0.network_id)
+         | selectattr('peer', 'equalto', _nb_pid[item.1] | default(''))
+         | first | default({}) }}
+    _want_groups: "{{ item.0.distribution_groups | map('extract', _nb_gid) | list }}"
+    _have: >-
+      {{ [_have_route.network | default(''), _have_route.groups | default([]) | sort,
+          _have_route.masquerade | default(false), _have_route.metric | default(0),
+          _have_route.enabled | default(false)] }}
+    _want: >-
+      {{ [item.0.network, _want_groups | sort, item.0.masquerade | bool,
+          item.0.metric | int, true] }}
   when:
     - item.1 in _nb_pid
-    - not (_nb_existing_routes | selectattr('network_id','equalto',item.0.network_id)
-                              | selectattr('peer','equalto', _nb_pid[item.1] | default('')) | list | length)
+    - _have_route.id is not defined or _have != _want
 
 # ------------------------------------------------------------- lockdown --
 
@@ -189,6 +283,8 @@
     headers: "{{ _nb_headers }}"
   register: _nb_final
   changed_when: false
+  # A read: also runs under --check, so check mode can show what would change.
+  check_mode: false
 
 - name: Policies in force
   ansible.builtin.debug:

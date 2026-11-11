@@ -1,0 +1,40 @@
+{{ ansible_managed | comment }}
+# Google Workspace MCP server, reachable only on Docker network {{ wmcp_network }}.
+# Regenerate with: ansible-playbook site.yml --limit {{ inventory_hostname }}
+
+[Unit]
+Description=Google Workspace MCP server
+Documentation=https://github.com/taylorwilsdon/google_workspace_mcp
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=15
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+# A stale container from an unclean shutdown would block the name.
+ExecStartPre=-/usr/bin/docker rm -f {{ wmcp_container_name }}
+
+# No --publish: only containers on the same network can connect.
+# Read-only filesystem with two in-memory exceptions: /tmp, and ~/.local,
+# where FastMCP writes its key-value store even in stateless mode (it fails
+# to start without it). Owned by the image's app user, uid 1000; both are
+# gone when the container stops.
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --name {{ wmcp_container_name }} \
+    --network {{ wmcp_network }} \
+    --read-only \
+    --tmpfs /tmp \
+    --tmpfs /home/app/.local:uid=1000,gid=1000,mode=0700 \
+    --env-file {{ wmcp_base_dir }}/workspace-mcp.env \
+    {{ wmcp_image }}
+
+ExecStop=/usr/bin/docker stop --time 20 {{ wmcp_container_name }}
+
+[Install]
+WantedBy=multi-user.target
