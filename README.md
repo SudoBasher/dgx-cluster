@@ -1,7 +1,6 @@
 # dgx-cluster
 
-Building stuff on a local DGX cluster: two DGX Sparks (`spark-a01a`,
-`spark-9d80`) joined by a 200GbE ConnectX-7 link.
+Building stuff on a local DGX cluster: two DGX Sparks (`spark-a01a`, `spark-9d80`) joined by a 200GbE ConnectX-7 link.
 
 | Document | Contents |
 |---|---|
@@ -36,5 +35,4 @@ ssh -F .ssh/config spark2
 | Observability | Thanos + Loki + Grafana in us-west-2, 18 scrape targets up, 12-month retention |
 | Access | NetBird VPN, all peer links direct P2P; nothing public except the VPN control plane |
 
-The NCCL figure is the binding constraint for multi-node inference. See
-`FINDINGS.md`.
+The NCCL figure is the binding constraint for multi-node inference. See `FINDINGS.md`.
