@@ -29,13 +29,15 @@
     - name: Fail on missing settings or Route53 credentials
       ansible.builtin.assert:
         that:
-          - tlsp_fqdn | length > 0
-          - tlsp_upstream | length > 0
+          - tlsp_sites | length > 0
+          - tlsp_sites | rejectattr('fqdn', 'defined') | list | length == 0
+          - tlsp_sites | rejectattr('upstream', 'defined') | list | length == 0
           - acme_aws_access_key_id | default('') | length > 0
           - acme_aws_secret_access_key | default('') | length > 0
         fail_msg: >-
-          tls_proxy needs tlsp_fqdn, tlsp_upstream and .secrets/acme-route53.yml
-          (acme_aws_access_key_id, acme_aws_secret_access_key); RUNBOOK section 26.
+          tls_proxy needs tlsp_sites (each with fqdn and upstream) and
+          .secrets/acme-route53.yml (acme_aws_access_key_id,
+          acme_aws_secret_access_key); RUNBOOK section 26.
       no_log: true
 
     ## Packages
@@ -62,7 +64,7 @@
         dest: "{{ tlsp_aws_credentials_file }}"
         content: |
           # Ansible managed - local edits will be overwritten
-          # IAM user {{ tlsp_fqdn }} ACME: may only write _acme-challenge TXT.
+          # ACME IAM user: may only write _acme-challenge TXT for {{ tlsp_sites | map(attribute='fqdn') | join(', ') }}.
           [default]
           aws_access_key_id = {{ acme_aws_access_key_id }}
           aws_secret_access_key = {{ acme_aws_secret_access_key }}
@@ -89,25 +91,27 @@
             mode: "0644"
           notify: reload systemd for tls_proxy
 
-    ## Certificate
+    ## Certificates, one per site
     # --deploy-hook is saved in the renewal config, so every renewal reloads
-    # nginx. Runs once; renewals come from certbot.timer.
-    - name: Issue the certificate
+    # nginx. Runs once per name; renewals come from certbot.timer.
+    - name: Issue the certificates
       ansible.builtin.command:
         argv:
           - certbot
           - certonly
           - --dns-route53
           - --domain
-          - "{{ tlsp_fqdn }}"
+          - "{{ item.fqdn }}"
           - --non-interactive
           - --agree-tos
           - --register-unsafely-without-email
           - --deploy-hook
           - systemctl reload nginx
-        creates: /etc/letsencrypt/live/{{ tlsp_fqdn }}/fullchain.pem
+        creates: /etc/letsencrypt/live/{{ item.fqdn }}/fullchain.pem
       environment:
         AWS_SHARED_CREDENTIALS_FILE: "{{ tlsp_aws_credentials_file }}"
+      loop: "{{ tlsp_sites }}"
+      loop_control: { label: "{{ item.fqdn }}" }
 
     - name: Ensure the renewal timer is on
       ansible.builtin.systemd:
@@ -142,21 +146,26 @@
 
     ## Verify
     # --resolve sends the request to this host while checking the certificate
-    # against the real name, as a client would.
+    # against the real name, as a client would. No -f: any HTTP answer proves
+    # nginx and the certificate. The upstream may not be up yet on a first
+    # run (Open WebUI deploys after this role), so a 502 is reported, not
+    # failed; a TLS or certificate error still fails.
     - name: Confirm HTTPS answers with a valid certificate
       ansible.builtin.command:
         argv:
           - curl
-          - -fsS
+          - -sS
           - -o
           - /dev/null
           - -w
           - "%{http_code}"
           - --resolve
-          - "{{ tlsp_fqdn }}:{{ tlsp_port }}:127.0.0.1"
-          - "https://{{ tlsp_fqdn }}:{{ tlsp_port }}/health"
+          - "{{ item.fqdn }}:{{ tlsp_port }}:127.0.0.1"
+          - "https://{{ item.fqdn }}:{{ tlsp_port }}/health"
       register: _tlsp_curl
       changed_when: false
+      loop: "{{ tlsp_sites }}"
+      loop_control: { label: "{{ item.fqdn }}" }
 
     - name: Confirm port {{ tlsp_port }} listens on IPv4 only
       ansible.builtin.command:
@@ -165,14 +174,18 @@
       changed_when: false
       failed_when: _tlsp_listen.stdout_lines | select('search', '\[') | list | length > 0
 
-    - name: Read the certificate's expiry
+    - name: Read each certificate's expiry
       ansible.builtin.command:
-        cmd: openssl x509 -noout -enddate -in /etc/letsencrypt/live/{{ tlsp_fqdn }}/fullchain.pem
+        cmd: openssl x509 -noout -enddate -in /etc/letsencrypt/live/{{ item.fqdn }}/fullchain.pem
       register: _tlsp_expiry
       changed_when: false
+      loop: "{{ tlsp_sites }}"
+      loop_control: { label: "{{ item.fqdn }}" }
 
     - name: Report
       ansible.builtin.debug:
         msg: >-
-          https://{{ tlsp_fqdn }} -> {{ tlsp_upstream }} (HTTP {{ _tlsp_curl.stdout }}),
-          certificate {{ _tlsp_expiry.stdout }}
+          https://{{ item.0.fqdn }} -> {{ item.0.upstream }} (HTTP {{ item.1.stdout }}),
+          certificate {{ item.2.stdout }}
+      loop: "{{ tlsp_sites | zip(_tlsp_curl.results, _tlsp_expiry.results) | list }}"
+      loop_control: { label: "{{ item.0.fqdn }}" }

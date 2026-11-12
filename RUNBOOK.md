@@ -2169,3 +2169,96 @@ three instances are no longer replaced. The only diff is two stale outputs in
 state, `netbird_b_fqdn` and `netbird_b_public_ip`, left over from the removed
 relay-b. Any later apply drops them without touching real infrastructure.
 
+## 28. NetBird key for tommy's iPhone `[workstation]`
+
+The phone is a separate peer from desktop2, so both stay connected at once. It
+uses a one-off key in the `admins` group, the same pattern as section 17's
+per-person keys, rather than the shared `admin-device` key. That shared key
+expired on 2026-10-02 in any case.
+
+```yaml
+# roles/netbird_config/defaults/main.yml
+- { name: tommy-iphone, groups: [admins], usage_limit: 1 }
+```
+
+```bash
+cd ansible && ansible-playbook netbird-access.yml > ../logs/netbird-access-tommy-iphone-20261111.log 2>&1
+```
+
+The role prints a new key once. It went into `.secrets/netbird-keys.yml` as
+`tommy_iphone_vpn_key` and was then redacted from the log. Checked through the
+API: `tommy-iphone`, one-off, valid, group `admins`, expires 2026-12-12.
+
+The play recap showed `changed=0` even though the key was created, because
+`uri` POSTs report `ok` by default. Check the API, not the recap.
+
+On the phone: NetBird app, Settings, Change Server,
+`https://vpn.isc-spectro-sbx.click:443`, "Add this device with a setup key",
+paste the key, Change, Connect. Once the phone is connected, delete the key
+line from `.secrets/netbird-keys.yml`; the key itself is spent.
+
+## 29. HTTPS for Open WebUI, and names on the VPN `[workstation, spark1]`
+
+Open WebUI on spark1 is now `https://openwebui.isc-spectro-sbx.click`, built
+the same way as Bifrost's name (section 26). Port 3001 listens on loopback
+only, so plain `http://spark1:3001` no longer answers.
+
+### Names on the VPN: already there
+
+No work needed. NetBird's built-in DNS answers for every peer on `wt0`, with
+`netbird.selfhosted` as a search domain:
+
+```bash
+resolvectl query spark1      # 100.123.96.149 (spark1.netbird.selfhosted), link wt0
+curl -s http://spark1.netbird.selfhosted:3001/health   # 200, before 3001 went to loopback
+```
+
+Those names can't get a Let's Encrypt certificate, so anything that needs
+HTTPS gets a public Route53 record pointing at its VPN address instead.
+
+### Changes
+
+| Piece | Change |
+|---|---|
+| `terraform/bifrost.tf` | `aws_route53_record.openwebui` (A, `100.123.96.149`); the ACME user's policy now also allows `_acme-challenge.openwebui.isc-spectro-sbx.click` |
+| `roles/tls_proxy` | `tlsp_fqdn`/`tlsp_upstream` replaced by a `tlsp_sites` list: one certificate and one nginx server block per site |
+| `roles/tls_proxy` verify | `curl` without `-f`, so a not-yet-running upstream (Open WebUI deploys after this role) is reported rather than failed; TLS errors still fail |
+| `roles/openwebui` | `owui_publish_address`, `127.0.0.1` on spark1 once HTTPS is up |
+| `host_vars/spark1.yml` | Both sites in `tlsp_sites`; `bifrost_external_url` from `_bifrost_fqdn` |
+
+*Table 29.1. What changed.*
+
+```bash
+cd terraform && tofu plan -out=../logs/openwebui-dns.tfplan && tofu apply ../logs/openwebui-dns.tfplan
+cd ansible && ansible-playbook site.yml --limit spark1 --diff > ../logs/site-spark1-openwebui-https-20261111.log 2>&1
+```
+
+The first apply created the record but failed on the IAM user's tag: IAM tag
+values can't contain a comma (`Member must satisfy regular expression pattern:
+[\p{L}\p{Z}\p{N}_.:/=+\-@]*`). With the comma replaced by "and", the second
+apply updated the tag and the policy.
+
+| Check | Result |
+|---|---|
+| `https://openwebui.isc-spectro-sbx.click/health` over the VPN | `200`; certificate valid until 2027-02-10 |
+| `https://bifrost.isc-spectro-sbx.click/health` | `200`, unchanged |
+| Same name pinned to spark1's lab-LAN address | `403` from nginx |
+| `http://spark1:3001` and `http://100.123.96.149:3001` | no connection |
+| WebSocket upgrade on `/ws/socket.io/` through nginx | `101 Switching Protocols` |
+| socket.io polling without a session, direct and through nginx | `400` both, so nginx adds nothing |
+| `certbot renew --dry-run` for the new name, with the renewal credentials | succeeded, so the widened IAM policy covers it |
+
+*Table 29.2. After the run.*
+
+To dry-run renewal by hand, give certbot the credentials the timer gets from
+its drop-in, and skip the random delay it adds when there's no terminal (up to
+~8 minutes):
+
+```bash
+sudo AWS_SHARED_CREDENTIALS_FILE=/etc/letsencrypt/aws-route53-credentials \
+  certbot renew --dry-run --no-random-sleep-on-renew --cert-name openwebui.isc-spectro-sbx.click
+```
+
+Without the variable it fails with `NoCredentialsError: Unable to locate
+credentials`; that's the manual run, not the timer.
+

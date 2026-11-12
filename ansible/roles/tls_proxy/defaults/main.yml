@@ -8,10 +8,13 @@
 # Set false to remove the site and stop nginx. The certificate is kept.
 tlsp_enabled: false
 
-## Site
-tlsp_fqdn: ""                       # e.g. bifrost.isc-spectro-sbx.click
+## Sites
+# One nginx server block and one certificate per entry, all on tlsp_port:
+#   - {fqdn: bifrost.isc-spectro-sbx.click, upstream: "http://127.0.0.1:4000"}
+# Each fqdn needs a Route53 record and a matching _acme-challenge name in the
+# IAM policy (terraform/bifrost.tf).
+tlsp_sites: []
 tlsp_port: 443
-tlsp_upstream: ""                   # e.g. http://127.0.0.1:4000
 
 # Long LLM replies stream for up to ~17 minutes (81920 tokens at ~80 tok/s),
 # so reads must outlast them. Matches Bifrost's own upstream timeout.
@@ -31,6 +34,6 @@ tlsp_allowed_cidrs:
 # timer renews 30 days early and the play reports the expiry date.
 # Route53 credentials, from .secrets/acme-route53.yml (loaded by site.yml):
 #   acme_aws_access_key_id, acme_aws_secret_access_key
-# The IAM user behind them may only write _acme-challenge.<tlsp_fqdn> TXT
-# records (terraform/bifrost.tf).
+# The IAM user behind them may only write the _acme-challenge TXT records of
+# the names in tlsp_sites (terraform/bifrost.tf).
 tlsp_aws_credentials_file: /etc/letsencrypt/aws-route53-credentials

@@ -56,6 +56,12 @@ variable "bifrost_hostname" {
   description = "Label under dns_zone for the Bifrost gateway's HTTPS name."
 }
 
+variable "openwebui_hostname" {
+  type        = string
+  default     = "openwebui"
+  description = "Label under dns_zone for Open WebUI's HTTPS name, on spark1 with Bifrost."
+}
+
 variable "bifrost_overlay_ip" {
   type        = string
   default     = "100.123.96.149"

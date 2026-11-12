@@ -1,35 +1,36 @@
 {{ ansible_managed | comment }}
-# HTTPS for {{ tlsp_fqdn }}, proxied to {{ tlsp_upstream }}.
+# HTTPS for {{ tlsp_sites | map(attribute='fqdn') | join(', ') }}.
 # Regenerate with: ansible-playbook site.yml --limit {{ inventory_hostname }}
 
-## WebSocket upgrade, for the dashboard's live views
+## WebSocket upgrade, for live views (Bifrost's dashboard, Open WebUI's chat)
 map $http_upgrade $tlsp_connection_upgrade {
     default upgrade;
     ''      close;
 }
+{% for site in tlsp_sites %}
 
+## {{ site.fqdn }} -> {{ site.upstream }}
 server {
-    ## Listener: IPv4 only. No [::] listen, so nothing reaches this over IPv6.
+    # Listener: IPv4 only. No [::] listen, so nothing reaches this over IPv6.
     # "listen ... http2" rather than "http2 on;": Ubuntu 24.04 ships nginx
     # 1.24, and the separate directive only arrived in 1.25.1.
     listen {{ tlsp_port }} ssl http2;
-    server_name {{ tlsp_fqdn }};
+    server_name {{ site.fqdn }};
 
-    ssl_certificate     /etc/letsencrypt/live/{{ tlsp_fqdn }}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{{ tlsp_fqdn }}/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/{{ site.fqdn }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ site.fqdn }}/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
-    ## Source allowlist
+    # Source allowlist
 {% for cidr in tlsp_allowed_cidrs %}
     allow {{ cidr }};
 {% endfor %}
     deny all;
 
-    ## Proxy
     client_max_body_size {{ tlsp_client_max_body_size }};
 
     location / {
-        proxy_pass {{ tlsp_upstream }};
+        proxy_pass {{ site.upstream }};
         proxy_http_version 1.1;
 
         proxy_set_header Host              $host;
@@ -46,3 +47,4 @@ server {
         proxy_send_timeout      {{ tlsp_proxy_timeout_seconds }}s;
     }
 }
+{% endfor %}

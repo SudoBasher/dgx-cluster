@@ -18,6 +18,37 @@ others. Clients exist for Linux, macOS, iOS, Android and Windows.
 
 Check state with `netbird status`.
 
+### iPhone
+
+Each device is its own peer, so a phone runs alongside a desktop or laptop on
+the same account with no conflict. A phone gets its own one-off setup key
+rather than the shared `admin-device` one (RUNBOOK section 28).
+
+1. Install NetBird from the App Store.
+2. Settings, Change Server, then enter `https://vpn.isc-spectro-sbx.click:443`.
+3. Tap "Add this device with a setup key", paste the key, then tap Change.
+4. Connect. The phone shows up as a peer in the `admins` group.
+
+The key works once and expires 30 days after issue. tommy's is
+`tommy_iphone_vpn_key` in `.secrets/netbird-keys.yml`.
+
+## Names on the VPN
+
+NetBird's built-in DNS gives every peer a name, so IPs are rarely needed. On a
+connected device `spark1`, `spark1.netbird.selfhosted` and `obs-read` all
+resolve to overlay addresses; NetBird adds `netbird.selfhosted` as a search
+domain. Names follow the peer name in the NetBird dashboard.
+
+| Name | Resolves to | Use for |
+|---|---|---|
+| `spark1`, `spark2`, `obs-read`, `obs-write` | the overlay IPs below | SSH, Grafana (`http://obs-read:3000`), anything plain HTTP |
+| `bifrost.isc-spectro-sbx.click` | spark1, public record | the gateway, HTTPS |
+| `openwebui.isc-spectro-sbx.click` | spark1, public record | Open WebUI, HTTPS |
+
+*Table: names on the VPN. The `.netbird.selfhosted` names can't carry an HTTPS
+certificate, since Let's Encrypt only issues for public names; services that
+need HTTPS get a public record pointing at the VPN address instead.*
+
 ## Overlay addresses
 
 These are stable NetBird addresses in `100.123.0.0/16`. They do not change when
@@ -163,7 +194,7 @@ in LM Studio run on desktop2's own hardware and never reach Bifrost.
 |---|---|---|
 | Grafana | http://100.123.229.83:3000 | metrics and log exploration; login `admin`, password in `.secrets/grafana.yml` |
 | NetBird dashboard | https://vpn.isc-spectro-sbx.click | the only public endpoint |
-| Open WebUI (spark1) | http://100.123.96.149:3001 | uses `qwen3.6-35b-a3b`; first account created is the admin; VPN only, the lab LAN is blocked |
+| Open WebUI (spark1) | https://openwebui.isc-spectro-sbx.click | uses `qwen3.6-35b-a3b` through Bifrost; VPN only (the lab LAN gets 403); port 3001 listens on loopback only |
 | Open WebUI (spark2) | http://100.123.5.235:3001 | same as spark1; goes away when spark2 is wiped |
 | Bifrost gateway (spark1) | https://bifrost.isc-spectro-sbx.click | OpenAI-compatible at `/v1`, MCP at `/mcp`; per-client virtual key; dashboard login in `.secrets/bifrost.yml`. Port 4000 listens on spark1's loopback only, so HTTPS is the only way in |
 | vLLM (spark1) | http://100.123.96.149:8000/v1 | OpenAI-compatible; requires a key |
@@ -195,7 +226,8 @@ curl -H "Authorization: Bearer $KEY" http://100.123.96.149:8000/v1/models
 The published port only accepts the VPN overlay, the Docker bridges, the
 interconnect and loopback. **Both Ethernet networks are blocked**, so a client
 on the lab LAN must join the VPN rather than using `spark-a01a.tommyslab:8000`.
-Open WebUI's port 3001 is restricted the same way.
+spark2's Open WebUI port 3001 is restricted the same way; spark1's listens on
+loopback only, behind HTTPS.
 Widen `ms_allowed_cidrs` in `roles/model_server/defaults/main.yml` if that is
 not what you want.
 

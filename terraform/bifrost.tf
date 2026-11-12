@@ -11,15 +11,28 @@ resource "aws_route53_record" "bifrost" {
   records = [var.bifrost_overlay_ip]
 }
 
+## Open WebUI HTTPS name
+# Same host as Bifrost (spark1), same nginx, its own certificate. VPN-only for
+# the same reason: the address is NetBird's overlay.
+resource "aws_route53_record" "openwebui" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = var.openwebui_hostname
+  type    = "A"
+  ttl     = 300
+  records = [var.bifrost_overlay_ip]
+}
+
 ## Certificate renewal credential
 # certbot on spark1 proves control of the name with a DNS-01 challenge: it
 # writes a TXT record at _acme-challenge.<name>. This user may change only
-# that one TXT record, so a leaked key can't touch anything else in the zone.
+# those TXT records (one per HTTPS name on spark1), so a leaked key can't touch
+# anything else in the zone. Named for Bifrost, its first site; renaming would
+# replace the user and its access key.
 # The access key is created outside Terraform (RUNBOOK section 26) so the
 # secret never lands in the state file.
 resource "aws_iam_user" "bifrost_acme" {
   name = "${local.name}-bifrost-acme"
-  tags = { Purpose = "certbot DNS-01 for ${local.bifrost_fqdn}" }
+  tags = { Purpose = "certbot DNS-01 for ${local.bifrost_fqdn} and ${local.openwebui_fqdn}" }
 }
 
 resource "aws_iam_user_policy" "bifrost_acme" {
@@ -43,8 +56,11 @@ resource "aws_iam_user_policy" "bifrost_acme" {
         Resource = data.aws_route53_zone.main.arn
         Condition = {
           "ForAllValues:StringEquals" = {
-            "route53:ChangeResourceRecordSetsNormalizedRecordNames" = ["_acme-challenge.${local.bifrost_fqdn}"]
-            "route53:ChangeResourceRecordSetsRecordTypes"           = ["TXT"]
+            "route53:ChangeResourceRecordSetsNormalizedRecordNames" = [
+              "_acme-challenge.${local.bifrost_fqdn}",
+              "_acme-challenge.${local.openwebui_fqdn}",
+            ]
+            "route53:ChangeResourceRecordSetsRecordTypes" = ["TXT"]
           }
         }
       }
@@ -53,5 +69,6 @@ resource "aws_iam_user_policy" "bifrost_acme" {
 }
 
 locals {
-  bifrost_fqdn = "${var.bifrost_hostname}.${var.dns_zone}"
+  bifrost_fqdn   = "${var.bifrost_hostname}.${var.dns_zone}"
+  openwebui_fqdn = "${var.openwebui_hostname}.${var.dns_zone}"
 }

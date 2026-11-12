@@ -38,7 +38,7 @@ roles/anythingllm/        web front end, enabled per node (retired, kept for rol
 roles/openwebui/          web front end, enabled per node (both Sparks)
 roles/bifrost/            LLM gateway in front of vLLM, enabled per node (spark1)
 roles/port_allowlist/     DOCKER-USER source allowlist, shared by vLLM, Bifrost and Open WebUI
-roles/tls_proxy/          nginx + Let's Encrypt (Route53 DNS-01) in front of Bifrost (spark1)
+roles/tls_proxy/          nginx + Let's Encrypt (Route53 DNS-01) in front of Bifrost and Open WebUI (spark1)
 roles/workspace_mcp/      Google Workspace MCP server behind Bifrost (spark1)
 vars/none.yml             empty stand-in for optional .secrets files
 site.yml                  the playbook
@@ -51,7 +51,7 @@ serving; everything node-specific lives in those two files.
 
 | Node | Model | Served as | Port | Front end |
 |---|---|---|---|---|
-| spark1 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | Open WebUI on 3001 |
+| spark1 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | Open WebUI at `https://openwebui.isc-spectro-sbx.click` |
 | spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | Open WebUI on 3001; to be wiped |
 
 Endpoints are OpenAI-compatible:
@@ -247,9 +247,10 @@ which reserves 80% of the unified pool on spark1.
 
 ## Open WebUI
 
-Runs on spark1 at http://100.123.96.149:3001 (since 2026-11-08) and on
-spark2 at http://100.123.5.235:3001 (since 2026-11-07, until it is wiped),
-over the VPN only; the `.tommyslab` LAN names stopped working on 2026-11-11. spark1's goes through Bifrost (`https://bifrost.isc-spectro-sbx.click/v1` since 2026-11-10,
+Runs on spark1 at https://openwebui.isc-spectro-sbx.click (since 2026-11-08,
+HTTPS since 2026-11-11, port 3001 on loopback behind nginx) and on spark2 at
+http://100.123.5.235:3001 (since 2026-11-07, until it is wiped), over the VPN
+only; the `.tommyslab` LAN names stopped working on 2026-11-11. spark1's goes through Bifrost (`https://bifrost.isc-spectro-sbx.click/v1` since 2026-11-10,
 virtual key `spark1-openwebui`, default model `vllm/qwen3.6-35b-a3b`), so its
 chats are counted per client; spark2's talks to its vLLM directly. Same shape as the AnythingLLM role: one container under a
 systemd unit, reaching vLLM on the host through `host.docker.internal`, enabled
@@ -260,7 +261,7 @@ one to the other is a `host_vars` change.
 | Setting | Value | Why |
 |---|---|---|
 | Image | `ghcr.io/open-webui/open-webui:v0.13.0` | Pinned; upstream's `:main` and `:latest` track the main branch, not releases |
-| Port | 3001 → 8080, IPv4 only | Same host port AnythingLLM had, so the URL didn't change |
+| Port | 3001 → 8080, IPv4 only; on spark1 published on `127.0.0.1` (`owui_publish_address`) | Same host port AnythingLLM had; spark1 is reached through `roles/tls_proxy` |
 | Firewall | DOCKER-USER: loopback, Docker bridges, VPN overlay | `roles/port_allowlist` on container port 8080 (since 2026-11-11); the lab LAN is dropped |
 | Data | `/opt/openwebui/data` → `/app/backend/data` | SQLite database, uploads, embedding cache |
 | vLLM key | `openwebui` entry in `.secrets/vllm-keys.yml` | Its own revocable credential, shared by both instances |
@@ -374,22 +375,30 @@ The play ends with a one-token request through the gateway using the first
 virtual key, which proves the key, the vLLM credential and the routing in one
 go.
 
-## HTTPS for Bifrost
+## HTTPS for Bifrost and Open WebUI
 
-`roles/tls_proxy` puts nginx on port 443 in front of Bifrost's port 4000, as
-`https://bifrost.isc-spectro-sbx.click`. That name is a public DNS record
-pointing at spark1's VPN address (`terraform/bifrost.tf`), so it only works on
-the VPN. The certificate comes from Let's Encrypt through a DNS-01 challenge:
+`roles/tls_proxy` puts nginx on port 443 in front of local ports, one server
+block and certificate per entry in `tlsp_sites`. On spark1:
+
+| Name | Upstream | Since |
+|---|---|---|
+| `https://bifrost.isc-spectro-sbx.click` | `127.0.0.1:4000` | 2026-11-10 |
+| `https://openwebui.isc-spectro-sbx.click` | `127.0.0.1:3001` | 2026-11-11 |
+
+*Table: HTTPS sites on spark1. Both upstream ports listen on loopback only.*
+
+Each name is a public DNS record pointing at spark1's VPN address
+(`terraform/bifrost.tf`), so it only works on the VPN. The certificate comes from Let's Encrypt through a DNS-01 challenge:
 certbot writes a TXT record in Route53, so no port 80 and nothing public is
 needed. Google needs this. It refuses OAuth redirect URIs on plain HTTP or a
 bare IP.
 
 | Piece | Where | Notes |
 |---|---|---|
-| DNS record and IAM user | `terraform/bifrost.tf` | The IAM user may write only the `_acme-challenge` TXT record for this one name |
+| DNS records and IAM user | `terraform/bifrost.tf` | The IAM user may write only the `_acme-challenge` TXT records for these names; a new site adds its name there first |
 | Route53 key | `.secrets/acme-route53.yml`, then `/etc/letsencrypt/aws-route53-credentials` (0600) | Created by hand so the secret stays out of Terraform state |
-| Certificate | `/etc/letsencrypt/live/<name>/` | `certbot.timer` renews it, with a drop-in giving it the key and a deploy hook reloading nginx |
-| Site | `/etc/nginx/sites-enabled/tls-proxy.conf` | IPv4 only, allowlist matching Bifrost's (loopback, Docker, VPN); streaming on, 1800 s timeouts |
+| Certificates | `/etc/letsencrypt/live/<name>/`, one per site | `certbot.timer` renews them, with a drop-in giving it the key and a deploy hook reloading nginx |
+| Sites | `/etc/nginx/sites-enabled/tls-proxy.conf`, one server block per site | IPv4 only, allowlist of loopback, Docker and VPN (the lab LAN gets 403); streaming and WebSockets on, 1800 s timeouts |
 
 *Table: the TLS proxy. Switched on in `host_vars/spark1.yml` once the Route53
 key is present.*

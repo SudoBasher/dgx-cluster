@@ -27,7 +27,7 @@ ExecStartPre=-/usr/bin/docker rm -f {{ owui_container_name }}
 ExecStart=/usr/bin/docker run \
     --rm \
     --name {{ owui_container_name }} \
-    --publish 0.0.0.0:{{ owui_port }}:8080 \
+    --publish {{ owui_publish_address }}:{{ owui_port }}:8080 \
     --volume {{ owui_data_dir }}:/app/backend/data \
     --env-file {{ owui_base_dir }}/openwebui.env \
     --add-host host.docker.internal:host-gateway \

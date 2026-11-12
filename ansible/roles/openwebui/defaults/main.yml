@@ -12,6 +12,9 @@ owui_enabled: false
 # not the newest stable release. v0.13.0 is published for linux/arm64.
 owui_image: ghcr.io/open-webui/open-webui:v0.13.0
 owui_port: 3001                    # host port; the container listens on 8080
+# Host address the port is published on. 127.0.0.1 when roles/tls_proxy is
+# the only way in; never [::], which the IPv4-only allowlist can't see.
+owui_publish_address: "0.0.0.0"
 owui_service_name: openwebui
 owui_container_name: openwebui
 

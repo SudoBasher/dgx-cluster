@@ -147,16 +147,25 @@ bifrost_logging_headers:
   - traceparent
   - b3
 
-## Gateway over HTTPS
-# https://bifrost.isc-spectro-sbx.click: a public DNS name for spark1's VPN
-# address (terraform/bifrost.tf), with nginx and a Let's Encrypt certificate in
-# front of port 4000 (roles/tls_proxy). Switched on once the Route53 key is in
-# .secrets/acme-route53.yml, so a run without it still deploys everything else.
+## HTTPS for Bifrost and Open WebUI
+# Public DNS names for spark1's VPN address (terraform/bifrost.tf), with nginx
+# and a Let's Encrypt certificate each, in front of the local ports
+# (roles/tls_proxy). Open WebUI joined on 2026-11-11. Switched on once the
+# Route53 key is in .secrets/acme-route53.yml, so a run without it still
+# deploys everything else.
 _tls_ready: "{{ acme_aws_access_key_id | default('') | length > 0 }}"
+_bifrost_fqdn: bifrost.isc-spectro-sbx.click
 tlsp_enabled: "{{ _tls_ready }}"
-tlsp_fqdn: bifrost.isc-spectro-sbx.click
-tlsp_upstream: "http://127.0.0.1:{{ bifrost_port | default(4000) }}"
-bifrost_external_url: "{{ 'https://' ~ tlsp_fqdn if _tls_ready else '' }}"
+tlsp_sites:
+  - fqdn: "{{ _bifrost_fqdn }}"
+    upstream: "http://127.0.0.1:{{ bifrost_port | default(4000) }}"
+  - fqdn: openwebui.isc-spectro-sbx.click
+    upstream: "http://127.0.0.1:{{ owui_port | default(3001) }}"
+bifrost_external_url: "{{ 'https://' ~ _bifrost_fqdn if _tls_ready else '' }}"
+
+# Port 3001 on loopback too, so https://openwebui.isc-spectro-sbx.click is the
+# only way in; http://spark1:3001 stops answering.
+owui_publish_address: "{{ '127.0.0.1' if _tls_ready else '0.0.0.0' }}"
 
 # With HTTPS up, port 4000 is published on loopback only (since 2026-11-11):
 # nginx and the telemetry scraper are its only callers, so a client left on
