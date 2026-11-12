@@ -24,6 +24,9 @@ nbcfg_setup_keys:
   # role matches on name and will not reissue a key that already exists.
   - { name: alex.scammon,    groups: [teammates], usage_limit: 1 }
   - { name: alex.scammon-laptop, groups: [teammates], usage_limit: 1 }
+  # tommy's iPhone, 2026-11-11. Its own peer alongside desktop2 and the other
+  # admin machines; NetBird runs any number of peers per person at once.
+  - { name: tommy-iphone,    groups: [admins], usage_limit: 1 }
   # obs-read needs both: aws-infra for admin access, obs-read so the teammate
   # Grafana policy can target it without exposing obs-write.
   - { name: aws-obs-read,    groups: [aws-infra, obs-read] }

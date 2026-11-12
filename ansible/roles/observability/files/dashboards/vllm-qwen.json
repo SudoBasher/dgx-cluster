@@ -1,7 +1,7 @@
 {
   "uid": "vllm-qwen",
   "title": "vLLM and Qwen performance",
-  "description": "Serving performance on the DGX Sparks: Qwen3.8-27B-FP8 on spark1, Qwen3.6-35B-A3B-NVFP4 on spark2.",
+  "description": "Serving performance on the DGX Sparks: Qwen3.6-35B-A3B-NVFP4 (spark1; spark2 until it is wiped). Qwen3.8-27B-FP8 on spark1 until 2026-11-08.",
   "tags": [
     "vllm",
     "dgx",
@@ -723,7 +723,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "End-to-end request latency",
-      "description": "Whole request. Qwen3.8 is a reasoning model, so most of this is thinking tokens the user never sees.",
+      "description": "Whole request. Qwen3.6 is a reasoning model, so most of this is thinking tokens the user never sees.",
       "datasource": {
         "type": "prometheus",
         "uid": "thanos"
@@ -855,7 +855,7 @@
                   "index": 1
                 },
                 "172.17.0.1": {
-                  "text": "on-node (AnythingLLM / scrape)",
+                  "text": "on-node (Open WebUI / scrape)",
                   "index": 2
                 },
                 "100.123.96.149": {
@@ -932,7 +932,7 @@
                   "index": 1
                 },
                 "172.17.0.1": {
-                  "text": "on-node (AnythingLLM / scrape)",
+                  "text": "on-node (Open WebUI / scrape)",
                   "index": 2
                 },
                 "100.123.96.149": {

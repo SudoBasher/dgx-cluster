@@ -1,0 +1,28 @@
+---
+# Source-network allowlist for one published container port, enforced in
+# DOCKER-USER. Used by model_server (vLLM) and bifrost through include_role,
+# which pass every value below; there are no useful defaults.
+
+## Identity
+# Names the script (/usr/local/sbin/<name>) and its systemd unit.
+pa_name: ""
+# iptables comment that marks this allowlist's rules, so a rerun can find and
+# replace exactly its own rules and nothing else.
+pa_tag: ""
+# The unit this allowlist must be in place before (the service it guards).
+pa_before_unit: ""
+
+## What to guard
+# The container port. After DNAT the packet's destination is the container
+# port, not the host port, so that's what DOCKER-USER sees.
+pa_container_port: 0
+# Set false to install the unit with no rules (removes any old ones).
+pa_restrict: true
+pa_allowed_cidrs: []
+
+## Post-start check (tasks_from: verify)
+# Also needs pa_tag and pa_allowed_cidrs, to count the rules.
+# The host port to check for IPv6 listeners. DOCKER-USER is IPv4 only, and an
+# IPv6 listener lets docker-proxy carry outside traffic in from 172.17.0.1,
+# an address the allowlist trusts.
+pa_host_port: 0

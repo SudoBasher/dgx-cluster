@@ -1,0 +1,39 @@
+{{ ansible_managed | comment }}
+# Open WebUI front end on port {{ owui_port }}.
+# Regenerate with: ansible-playbook site.yml --limit {{ inventory_hostname }}
+
+[Unit]
+Description=Open WebUI
+Documentation=https://docs.openwebui.com
+After=docker.service network-online.target {{ owui_service_name }}-firewall.service
+Requires=docker.service
+Wants=network-online.target
+{% if owui_llm_base_url is search('host.docker.internal') %}
+# Not a hard dependency: the UI should still come up when vLLM is down, so it
+# can show the error and be reconfigured.
+After={{ ms_service_name | default('vllm') }}.service
+{% endif %}
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=15
+TimeoutStartSec=600
+TimeoutStopSec=60
+
+# A stale container from an unclean shutdown would block the name.
+ExecStartPre=-/usr/bin/docker rm -f {{ owui_container_name }}
+
+ExecStart=/usr/bin/docker run \
+    --rm \
+    --name {{ owui_container_name }} \
+    --publish {{ owui_publish_address }}:{{ owui_port }}:8080 \
+    --volume {{ owui_data_dir }}:/app/backend/data \
+    --env-file {{ owui_base_dir }}/openwebui.env \
+    --add-host host.docker.internal:host-gateway \
+    {{ owui_image }}
+
+ExecStop=/usr/bin/docker stop --time 30 {{ owui_container_name }}
+
+[Install]
+WantedBy=multi-user.target

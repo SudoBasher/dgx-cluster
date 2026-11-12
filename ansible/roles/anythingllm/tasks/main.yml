@@ -12,11 +12,14 @@
         enabled: false
       failed_when: false
 
+    # docker rm -f exits 0 whether or not the container existed, and prints
+    # its name only when it removed one. Key changed off the output, not rc,
+    # so a node without AnythingLLM doesn't report a change on every run.
     - name: Remove any lingering AnythingLLM container
       ansible.builtin.command:
         cmd: docker rm -f {{ allm_container_name }}
       register: _allm_rm
-      changed_when: _allm_rm.rc == 0
+      changed_when: _allm_rm.stdout | length > 0
       failed_when: false
 
     - name: Remove the AnythingLLM unit file
@@ -24,6 +27,15 @@
         path: /etc/systemd/system/{{ allm_service_name }}.service
         state: absent
       notify: reload systemd for anythingllm
+
+    # Stopping the container exits non-zero, so systemd records the unit as
+    # failed and keeps listing it under `systemctl --failed` after the unit
+    # file is gone. Clear that; a no-op when there is nothing to clear.
+    - name: Clear any failed state left by the stop
+      ansible.builtin.command:
+        cmd: systemctl reset-failed {{ allm_service_name }}
+      changed_when: false
+      failed_when: false
 
 # ----------------------------------------------------------------- enabled --
 

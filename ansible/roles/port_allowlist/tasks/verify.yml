@@ -1,0 +1,28 @@
+---
+## Fail if the guarded port listens on IPv6
+# Run after the guarded service is up. DOCKER-USER rules are IPv4 only, so an
+# IPv6 listener (docker-proxy on [::]) let the lab LAN reach vLLM and Bifrost
+# over link-local addresses until 2026-11-10. ss prints IPv6 addresses in
+# brackets, e.g. [::]:8000.
+
+- name: Confirm port {{ pa_host_port }} listens on IPv4 only
+  ansible.builtin.command:
+    cmd: ss -Hltn "sport = :{{ pa_host_port }}"
+  register: _pa_listen
+  changed_when: false
+  failed_when: >-
+    _pa_listen.rc != 0
+    or _pa_listen.stdout_lines | length == 0
+    or _pa_listen.stdout_lines | select('search', '\[') | list | length > 0
+
+## Fail unless exactly one set of rules is in place
+# One per allowed CIDR, plus the established and drop rules. More means the
+# cleanup step stopped matching and stale rules (maybe a removed CIDR) remain.
+- name: Confirm DOCKER-USER holds exactly one {{ pa_tag }} rule set
+  become: true
+  ansible.builtin.shell:
+    cmd: set -o pipefail; iptables -S DOCKER-USER | grep -cE -- '--comment "?{{ pa_tag }}"? ' || true
+    executable: /bin/bash
+  register: _pa_rules
+  changed_when: false
+  failed_when: _pa_rules.stdout | int != (pa_allowed_cidrs | length + 2)

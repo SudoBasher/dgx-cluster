@@ -33,3 +33,15 @@ output "obs_private_ips" {
 }
 
 
+
+output "bifrost_fqdn" {
+  value = aws_route53_record.bifrost.fqdn
+}
+
+output "openwebui_fqdn" {
+  value = aws_route53_record.openwebui.fqdn
+}
+
+output "bifrost_acme_user" {
+  value = aws_iam_user.bifrost_acme.name
+}

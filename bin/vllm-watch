@@ -19,7 +19,7 @@ probe() {   # $1 = host
       curl -s -m 3 http://127.0.0.1:8000/metrics 2>/dev/null | awk -v svc="$svc" "
         /^vllm:num_requests_running/       {run=\$2}
         /^vllm:num_requests_waiting/       {wait=\$2}
-        /^vllm:gpu_cache_usage_perc/       {kv=\$2}
+        /^vllm:kv_cache_usage_perc/        {kv=\$2}
         /^vllm:generation_tokens_total/    {gen=\$2}
         /^vllm:prompt_tokens_total/        {pr=\$2}
         END {printf \"SERVING|%d|%d|%.1f|%d|%d\", run, wait, kv*100, gen, pr}"

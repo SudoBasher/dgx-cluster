@@ -1,0 +1,16 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Restrict source networks allowed to reach {{ pa_before_unit }} ({{ pa_tag }})
+# Requires= also stops or restarts this unit when Docker is stopped or
+# restarted, so the rules are reapplied after Docker rebuilds its chains.
+After=docker.service
+Requires=docker.service
+Before={{ pa_before_unit }}
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/{{ pa_name }}
+
+[Install]
+WantedBy=multi-user.target

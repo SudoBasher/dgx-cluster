@@ -1,13 +1,8 @@
 # {{ ansible_managed }}
 # Query path and UI. Isolated from compaction so dashboards stay responsive.
 services:
-  memcached:
-    image: {{ obs_memcached_image }}
-    container_name: memcached
-    restart: always
-    network_mode: host
-    command: ["-m", "4096", "-I", "32m", "-p", "11211"]
-
+  # The store gateway caches in memory (--index-cache-size). A memcached
+  # service ran here until 2026-11-10 that nothing was configured to use.
   thanos-store:
     image: {{ obs_thanos_image }}
     container_name: thanos-store

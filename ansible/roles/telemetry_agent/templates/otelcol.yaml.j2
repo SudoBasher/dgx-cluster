@@ -9,7 +9,7 @@ receivers:
   prometheus:
     config:
       scrape_configs:
-{% for job in tel_scrape_jobs %}
+{% for job in tel_scrape_jobs + (tel_extra_scrape_jobs | default([])) %}
         - job_name: {{ job.name }}
           scrape_interval: {{ job.interval }}
           scrape_timeout: {{ job.timeout | default('900ms' if job.interval == '1s' else '5s') }}

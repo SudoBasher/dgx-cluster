@@ -81,11 +81,23 @@
         - "{{ tel_dir }}"
         - "{{ tel_dir }}/queue"
 
+    # apt's deb: downloads the package before it compares versions, so without
+    # this check every run depends on GitHub's release CDN being up, even when
+    # the right version is already installed (a 504 from it failed a run on
+    # 2026-11-08 that only needed a config change).
+    - name: Check the installed collector version
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f=${Version} otelcol-contrib
+      register: _tel_installed
+      changed_when: false
+      failed_when: false
+
     - name: Install the collector package
       ansible.builtin.apt:
         deb: >-
           https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ tel_otel_version }}/otelcol-contrib_{{ tel_otel_version }}_linux_{{ (ansible_architecture == 'aarch64') | ternary('arm64', 'amd64') }}.deb
       register: _tel_pkg
+      when: _tel_installed.stdout | trim != tel_otel_version
 
     - name: Write the collector config
       ansible.builtin.template:

@@ -32,6 +32,14 @@ resource "aws_instance" "netbird" {
   }
 
   tags = { Name = "${local.name}-netbird-cp" }
+
+  # The AMI lookup above follows Canonical's newest image, and a new AMI
+  # forces replacement. Without this, a routine apply would rebuild the VPN
+  # control plane and lose every peer, user and setup key. Rebuild on purpose
+  # with: tofu apply -replace=aws_instance.netbird
+  lifecycle {
+    ignore_changes = [ami]
+  }
 }
 
 resource "aws_eip" "netbird" {

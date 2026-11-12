@@ -1,0 +1,212 @@
+---
+## Disabled: tear down cleanly, keep the data directory
+
+- name: Tear down Bifrost
+  when: not bifrost_enabled
+  become: true
+  block:
+    - name: Stop and disable the Bifrost services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      loop:
+        - "{{ bifrost_service_name }}"
+        - "{{ bifrost_service_name }}-firewall"
+      failed_when: false
+
+    # docker rm -f exits 0 either way and prints the name only when it removed
+    # a container, so key changed off the output.
+    - name: Remove any lingering Bifrost container
+      ansible.builtin.command:
+        cmd: docker rm -f {{ bifrost_container_name }}
+      register: _bf_rm
+      changed_when: _bf_rm.stdout | length > 0
+      failed_when: false
+
+    - name: Remove the Bifrost unit files
+      ansible.builtin.file:
+        path: /etc/systemd/system/{{ item }}.service
+        state: absent
+      loop:
+        - "{{ bifrost_service_name }}"
+        - "{{ bifrost_service_name }}-firewall"
+      notify: reload systemd for bifrost
+
+    - name: Clear any failed state left by the stop
+      ansible.builtin.command:
+        cmd: systemctl reset-failed {{ bifrost_service_name }} {{ bifrost_service_name }}-firewall
+      changed_when: false
+      failed_when: false
+
+## Enabled: deploy
+
+- name: Deploy Bifrost
+  when: bifrost_enabled
+  block:
+
+    ## Preconditions
+    # Bifrost's own password policy, checked here so a weak password fails
+    # the play instead of the container's first start.
+    - name: Fail early on missing or weak configuration
+      ansible.builtin.assert:
+        that:
+          - bifrost_vllm_model | length > 0
+          - bifrost_vllm_key | length > 0
+          - bifrost_admin_password | default('') | length >= 12
+          - bifrost_admin_password is search('[A-Z]')
+          - bifrost_admin_password is search('[a-z]')
+          - bifrost_admin_password is search('[0-9]')
+          - bifrost_admin_password is search('[^A-Za-z0-9]')
+          - bifrost_encryption_key | default('') | length > 0
+          - (bifrost_virtual_keys | default([]) | map(attribute='value')
+             | reject('match', '^sk-bf-') | list | length) == 0
+        fail_msg: >-
+          Bifrost needs bifrost_vllm_model, a "bifrost" entry in ms_api_keys,
+          and .secrets/bifrost.yml with an admin password of 12+ characters
+          mixing upper, lower, digit and special, an encryption key, and
+          virtual key values starting with sk-bf-.
+      no_log: true
+
+    ## Directories
+    - name: Ensure the base directory exists
+      become: true
+      ansible.builtin.file:
+        path: "{{ bifrost_base_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Ensure the data directory exists, owned by the container user
+      become: true
+      ansible.builtin.file:
+        path: "{{ bifrost_data_dir }}"
+        state: directory
+        owner: "{{ bifrost_uid }}"
+        group: "{{ bifrost_gid }}"
+        mode: "0750"
+
+    ## Image
+    - name: Pull the Bifrost image
+      ansible.builtin.command:
+        cmd: docker pull {{ bifrost_image }}
+      register: _bf_pull
+      changed_when: "'Downloaded newer image' in _bf_pull.stdout"
+      async: 1200
+      poll: 10
+
+    ## Configuration
+    # config.json holds env.VAR references only; it carries no secrets.
+    - name: Write config.json
+      become: true
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ bifrost_data_dir }}/config.json"
+        owner: "{{ bifrost_uid }}"
+        group: "{{ bifrost_gid }}"
+        mode: "0640"
+      register: _bf_config
+
+    - name: Write the environment file
+      become: true
+      ansible.builtin.template:
+        src: bifrost.env.j2
+        dest: "{{ bifrost_base_dir }}/bifrost.env"
+        owner: root
+        group: root
+        mode: "0600"
+      register: _bf_env
+      no_log: true
+
+    ## Source-network allowlist, shared with model_server
+    # The container listens on bifrost_port too, so it's also the port
+    # DOCKER-USER sees after DNAT.
+    - name: Source-network allowlist
+      ansible.builtin.include_role:
+        name: port_allowlist
+      vars:
+        pa_name: "{{ bifrost_service_name }}-firewall"
+        pa_tag: bifrost-acl
+        pa_before_unit: "{{ bifrost_service_name }}.service"
+        pa_container_port: "{{ bifrost_port }}"
+        pa_restrict: "{{ bifrost_restrict_network }}"
+        pa_allowed_cidrs: "{{ bifrost_allowed_cidrs }}"
+
+    ## Gateway unit
+    - name: Install the Bifrost unit
+      become: true
+      ansible.builtin.template:
+        src: bifrost.service.j2
+        dest: /etc/systemd/system/{{ bifrost_service_name }}.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: _bf_unit
+      notify: reload systemd for bifrost
+
+    - name: Apply unit changes now
+      ansible.builtin.meta: flush_handlers
+
+    ## Start
+    - name: Enable and start Bifrost
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ bifrost_service_name }}"
+        enabled: true
+        state: >-
+          {{ 'restarted'
+             if (_bf_unit.changed or _bf_env.changed or _bf_config.changed)
+             else 'started' }}
+
+    ## Verify
+    # /health is always unauthenticated and returns 200 once the stores are up.
+    - name: Wait for Bifrost to report healthy
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ bifrost_port }}/health"
+        status_code: 200
+      register: _bf_health
+      until: _bf_health.status == 200
+      retries: "{{ (bifrost_health_timeout | int / 10) | int }}"
+      delay: 10
+      when: bifrost_wait_for_health
+
+    - name: Confirm the allowlist can't be bypassed over IPv6
+      ansible.builtin.include_role:
+        name: port_allowlist
+        tasks_from: verify
+      vars:
+        pa_host_port: "{{ bifrost_port }}"
+        pa_tag: bifrost-acl
+        pa_allowed_cidrs: "{{ bifrost_allowed_cidrs }}"
+      when: bifrost_wait_for_health and bifrost_restrict_network
+
+    # End to end through the gateway with the first virtual key: proves the
+    # key is accepted, the vLLM credential works and the model is routed.
+    - name: Send a one-token request through the gateway
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ bifrost_port }}/v1/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ bifrost_virtual_keys[0].value }}"
+        body_format: json
+        body:
+          model: "vllm/{{ bifrost_vllm_model }}"
+          max_tokens: 1
+          messages: [{role: user, content: "hi"}]
+        status_code: 200
+        timeout: 120
+      register: _bf_smoke
+      when:
+        - bifrost_wait_for_health
+        - bifrost_virtual_keys | default([]) | length > 0
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Bifrost on {{ inventory_hostname }} at
+          http://{{ ansible_host | default(inventory_hostname) }}:{{ bifrost_port }},
+          routing vllm/{{ bifrost_vllm_model }} to {{ bifrost_vllm_url }};
+          smoke test {{ 'passed' if (_bf_smoke.status | default(0)) == 200 else 'skipped' }}
+      when: bifrost_wait_for_health

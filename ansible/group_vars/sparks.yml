@@ -6,7 +6,8 @@ tel_enable_dcgm: true
 
 tel_journal_units:
   - vllm
-  - anythingllm
+  - openwebui      # front end since 2026-11-07/08; replaced anythingllm
+  - bifrost        # gateway, spark1 only; a unit that doesn't exist ships nothing
   - docker
   - netbird
   - ssh

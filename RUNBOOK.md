@@ -1,31 +1,25 @@
 # Rebuild runbook
 
-Every system-level command needed to take a DGX Spark from stock DGX OS to the
-cluster's current state, in replay order. Read-only checks are included where
-they gate a decision or confirm a step worked.
+Every system-level command needed to take a DGX Spark from stock DGX OS to the cluster's current state, in replay order. Read-only checks are included where they gate a decision or confirm a step worked.
 
-Keep this current. If a change isn't recorded here it is lost on the next
-rebuild.
+Keep this current. If a change isn't recorded here it is lost on the next rebuild.
 
 ## Conventions
 
-`[workstation]` runs on the local machine from the repo root. `[each node]` runs
-on both Sparks. `[spark1]` and `[spark2]` run on one only.
+`[workstation]` runs on the local machine from the repo root. `[each node]` runs on both Sparks. `[spark1]` and `[spark2]` run on one only.
 
 | Alias | Hostname | Management IP | Management NIC |
 |---|---|---|---|
 | spark1 | `spark-a01a.tommyslab` | 10.255.129.236 | `enP7s7` |
 | spark2 | `spark-9d80.tommyslab` | 10.255.131.79 | `enP7s7` |
 
-Per node: NVIDIA GB10, 121 GiB unified memory, 3.7 TB NVMe, kernel
-6.17.0-1014-nvidia aarch64, driver 580.142, Docker 29.2.1, ConnectX-7.
+Per node: NVIDIA GB10, 121 GiB unified memory, 3.7 TB NVMe, kernel 6.17.0-1014-nvidia aarch64, driver 580.142, Docker 29.2.1, ConnectX-7.
 
 ---
 
 ## 1. SSH keypair `[workstation]`
 
-Keys live in this repository, not in `~/.ssh`. No passphrase, so automation can
-use them non-interactively.
+Keys live in this repository, not in `~/.ssh`. No passphrase, so automation can use them non-interactively.
 
 ```bash
 mkdir -p .ssh && chmod 700 .ssh
@@ -79,16 +73,9 @@ sudo usermod -aG docker claude
 sudo usermod -aG docker user
 ```
 
-`useradd` leaves the password locked, which is intended: the key is the only way
-in. `install -d` creates the directory already at mode 700 rather than creating
-it 0755 and tightening afterwards. This matters because sshd's `StrictModes`
-rejects the key if `~/.ssh` or the home directory is group- or world-writable,
-and it fails without explanation on the client side.
+`useradd` leaves the password locked, which is intended: the key is the only way in. `install -d` creates the directory already at mode 700 rather than creating it 0755 and tightening afterwards. This matters because sshd's `StrictModes` rejects the key if `~/.ssh` or the home directory is group- or world-writable, and it fails without explanation on the client side.
 
-Passwordless sudo. The account has no password, so ordinary `sudo` would prompt
-and hang under automation. Note that docker group membership is already
-root-equivalent in practice, since a container can bind-mount the host
-filesystem, so this widens access less than it first appears.
+Passwordless sudo. The account has no password, so ordinary `sudo` would prompt and hang under automation. Note that docker group membership is already root-equivalent in practice, since a container can bind-mount the host filesystem, so this widens access less than it first appears.
 
 ```bash
 echo 'claude ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/claude
@@ -96,8 +83,7 @@ sudo chmod 440 /etc/sudoers.d/claude
 sudo visudo -c
 ```
 
-Validate with `visudo -c` before logging out. If sshd has an allowlist, add
-`claude` to it and reload:
+Validate with `visudo -c` before logging out. If sshd has an allowlist, add `claude` to it and reload:
 
 ```bash
 sudo grep -E '^(AllowUsers|AllowGroups|PubkeyAuthentication)' \
@@ -109,8 +95,7 @@ sudo -u claude ls -la /home/claude/.ssh
 
 ## 3. SSH client config `[workstation]`
 
-`.ssh/config`, committed. `IdentitiesOnly` and `IdentityAgent none` ensure ssh
-never falls back to a key in `~/.ssh` or the agent.
+`.ssh/config`, committed. `IdentitiesOnly` and `IdentityAgent none` ensure ssh never falls back to a key in `~/.ssh` or the agent.
 
 ```sshconfig
 Host spark1 spark-a01a spark-a01a.tommyslab
@@ -130,18 +115,11 @@ Host spark1 spark2 spark-a01a spark-9d80 spark-a01a.tommyslab spark-9d80.tommysl
     ServerAliveCountMax 4
 ```
 
-The nodes moved from the `.local` (mDNS) network to the `tommyslab` domain on
-2026-08-27; management addresses changed with it. The extra `.tommyslab` host
-patterns exist because the `Host` block must match whatever name is typed, and
-a bare `spark-a01a` and a fully qualified `spark-a01a.tommyslab` are different
-patterns to ssh.
+The nodes moved from the `.local` (mDNS) network to the `tommyslab` domain on 2026-08-27; management addresses changed with it. The extra `.tommyslab` host patterns exist because the `Host` block must match whatever name is typed, and a bare `spark-a01a` and a fully qualified `spark-a01a.tommyslab` are different patterns to ssh.
 
-The 192.168.100.x/101.x interconnect is unaffected by any of this. It is a
-private direct cable with static addresses, independent of the site network.
+The 192.168.100.x/101.x interconnect is unaffected by any of this. It is a private direct cable with static addresses, independent of the site network.
 
-First connection pins host keys to the repo-local `known_hosts`. Names that
-changed are pinned afresh, so expect new entries rather than a mismatch
-warning:
+First connection pins host keys to the repo-local `known_hosts`. Names that changed are pinned afresh, so expect new entries rather than a mismatch warning:
 
 ```bash
 for h in spark1 spark2; do
@@ -173,20 +151,15 @@ for h in spark1 spark2; do
 done
 ```
 
-Two deviations from a working state are expected on a fresh install and are
-fixed in sections 5 and 6: Docker has no `nvidia` runtime registered, and the
-ConnectX ports carry no IP addresses.
+Two deviations from a working state are expected on a fresh install and are fixed in sections 5 and 6: Docker has no `nvidia` runtime registered, and the ConnectX ports carry no IP addresses.
 
-`nvidia-smi` reports `memory.total` as `N/A`. That is correct for GB10, where
-CPU and GPU share one 121 GiB pool.
+`nvidia-smi` reports `memory.total` as `N/A`. That is correct for GB10, where CPU and GPU share one 121 GiB pool.
 
 ---
 
 ## 5. Register the NVIDIA container runtime `[each node]`
 
-DGX OS ships `nvidia-container-toolkit` but does not wire it into Docker. There
-is no `/etc/docker/daemon.json` out of the box, so `docker run --gpus` fails
-until this runs.
+DGX OS ships `nvidia-container-toolkit` but does not wire it into Docker. There is no `/etc/docker/daemon.json` out of the box, so `docker run --gpus` fails until this runs.
 
 ```bash
 sudo nvidia-ctk runtime configure --runtime=docker
@@ -206,8 +179,7 @@ This writes:
 }
 ```
 
-Verify. `Runtimes` must list `nvidia`, and the GPU must appear inside a
-container:
+Verify. `Runtimes` must list `nvidia`, and the GPU must appear inside a container:
 
 ```bash
 docker info | grep -iA1 Runtimes
@@ -222,27 +194,20 @@ Expect `GPU 0: NVIDIA GB10 (UUID: GPU-...)`.
 
 ### Topology
 
-One cable joins the nodes. Linux presents two devices that reach it, on separate
-PCIe domains:
+One cable joins the nodes. Linux presents two devices that reach it, on separate PCIe domains:
 
 | Path | Device | PCI | RoCE device | Subnet |
 |---|---|---|---|---|
 | A | `enp1s0f0np0` | 0000:01:00.0 | `rocep1s0f0` | 192.168.100.0/24 |
 | B | `enP2p1s0f0np0` | 0002:01:00.0 | `roceP2p1s0f0` | 192.168.101.0/24 |
 
-The `f1` devices show `carrier=0`; the second QSFP cage is empty. These are not
-two independent links. Both paths leave on the same wire, and the separate PCIe
-domains only double the host-side bandwidth to it.
+The `f1` devices show `carrier=0`; the second QSFP cage is empty. These are not two independent links. Both paths leave on the same wire, and the separate PCIe domains only double the host-side bandwidth to it.
 
-Do not try to map the cabling with LLDP or transceiver EEPROM. Both give wrong
-answers here; see `FINDINGS.md`, "Measurement notes".
+Do not try to map the cabling with LLDP or transceiver EEPROM. Both give wrong answers here; see `FINDINGS.md`, "Measurement notes".
 
 ### Configuration `[each node]`
 
-`/etc/netplan/50-cluster-interconnect.yaml`, with `.1` on spark1 and `.2` on
-spark2. The renderer must match the installer config. Management traffic uses a
-separate NIC managed by NetworkManager profiles and is deliberately absent here,
-so applying this cannot cut an SSH session.
+`/etc/netplan/50-cluster-interconnect.yaml`, with `.1` on spark1 and `.2` on spark2. The renderer must match the installer config. Management traffic uses a separate NIC managed by NetworkManager profiles and is deliberately absent here, so applying this cannot cut an SSH session.
 
 ```yaml
 network:
@@ -266,9 +231,7 @@ sudo chmod 600 /etc/netplan/50-cluster-interconnect.yaml
 sudo netplan apply
 ```
 
-Netplan warns if the file is group- or world-readable. Addresses added with a
-bare `ip addr add` are stripped by NetworkManager within minutes, so always
-persist them here or later tests will fail confusingly.
+Netplan warns if the file is group- or world-readable. Addresses added with a bare `ip addr add` are stripped by NetworkManager within minutes, so always persist them here or later tests will fail confusingly.
 
 Add names to `/etc/hosts` on both nodes:
 
@@ -295,9 +258,7 @@ ib_write_bw -d rocep1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576
 ib_write_bw -d rocep1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576 192.168.100.2
 ```
 
-Both rails at once, which is the actual 200G test. The server side must stay in
-a live SSH session — backgrounding it with `nohup`/`setsid` over `ssh` leaves it
-dead and the client reports `Couldn't connect`:
+Both rails at once, which is the actual 200G test. The server side must stay in a live SSH session — backgrounding it with `nohup`/`setsid` over `ssh` leaves it dead and the client reports `Couldn't connect`:
 
 ```bash
 # spark2, one shell
@@ -310,14 +271,9 @@ ib_write_bw -d roceP2p1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576 -D 15 -p 1851
 wait
 ```
 
-Expect about 112 Gb/s on one path and 196 Gb/s driving both. Latency via
-`ib_send_lat` should be about 1.7 µs. Do not use `ping` to judge the fabric; it
-reads 1.25 ms because ICMP goes through the kernel stack.
+Expect about 112 Gb/s on one path and 196 Gb/s driving both. Latency via `ib_send_lat` should be about 1.7 µs. Do not use `ping` to judge the fabric; it reads 1.25 ms because ICMP goes through the kernel stack.
 
-Measured 2026-08-31: rail A alone 111.86 Gb/s, rail B alone 111.47 Gb/s, both
-together 98.04 + 98.04 = 196.08 Gb/s. `ib_send_lat` 1.38 µs typical, 1.48 µs at
-the 99th percentile. Both rails carry 8972-byte unfragmented pings. No
-`rx_crc_errors_phy`, `rx_symbol_error_phy`, or discards on either node.
+Measured 2026-08-31: rail A alone 111.86 Gb/s, rail B alone 111.47 Gb/s, both together 98.04 + 98.04 = 196.08 Gb/s. `ib_send_lat` 1.38 µs typical, 1.48 µs at the 99th percentile. Both rails carry 8972-byte unfragmented pings. No `rx_crc_errors_phy`, `rx_symbol_error_phy`, or discards on either node.
 
 Check the PHY error counters after any bandwidth run:
 
@@ -325,14 +281,11 @@ Check the PHY error counters after any bandwidth run:
 sudo ethtool -S enp1s0f0np0 | grep -E 'crc_errors_phy|symbol_error_phy|discards_phy|link_down_events_phy'
 ```
 
-A nonzero `link_down_events_phy` matching the number of `netplan apply` runs
-since boot is expected. CRC or symbol errors are not, and mean the cable or a
-transceiver needs reseating.
+A nonzero `link_down_events_phy` matching the number of `netplan apply` runs since boot is expected. CRC or symbol errors are not, and mean the cable or a transceiver needs reseating.
 
 ### Loop safety
 
-Do not bond or bridge the two devices. They share one wire, so a bond gains
-nothing, and bridging would create a loop. Confirm nothing bridges them:
+Do not bond or bridge the two devices. They share one wire, so a bond gains nothing, and bridging would create a loop. Confirm nothing bridges them:
 
 ```bash
 bridge link show | grep -E 'enp1s0f0np0|enP2p1s0f0np0'   # expect no output
@@ -342,16 +295,14 @@ bridge link show | grep -E 'enp1s0f0np0|enP2p1s0f0np0'   # expect no output
 
 ## 7. Intra-cluster SSH `[each node]`
 
-Distributed launchers need passwordless SSH between nodes over the interconnect.
-Use a keypair separate from the workstation key.
+Distributed launchers need passwordless SSH between nodes over the interconnect. Use a keypair separate from the workstation key.
 
 ```bash
 # spark1
 ssh-keygen -t ed25519 -f ~/.ssh/cluster -N "" -C "spark-intra-cluster"
 ```
 
-Copy the pair to spark2 without staging it anywhere else, piping host to host
-from the workstation:
+Copy the pair to spark2 without staging it anywhere else, piping host to host from the workstation:
 
 ```bash
 ssh -F .ssh/config spark1 'cat ~/.ssh/cluster'     | ssh -F .ssh/config spark2 'cat > ~/.ssh/cluster && chmod 600 ~/.ssh/cluster'
@@ -386,10 +337,7 @@ ssh -F .ssh/config spark2 'ssh spark1-ic hostname'   # spark-a01a
 
 ## 8. Monitoring tooling `[each node]`
 
-DGX OS ships only `htop`, `top`, `sar` and `iostat`. Everything else is
-installed by the playbook from `node_packages` in
-`ansible/group_vars/all.yml` (nvtop, btop, glances, iftop, bmon, nload, dstat,
-sysstat, traceroute, mtr-tiny, iperf3, rsync). By hand:
+DGX OS ships only `htop`, `top`, `sar` and `iostat`. Everything else is installed by the playbook from `node_packages` in `ansible/group_vars/all.yml` (nvtop, btop, glances, iftop, bmon, nload, dstat, sysstat, traceroute, mtr-tiny, iperf3, rsync). By hand:
 
 ```bash
 sudo apt-get update
@@ -397,10 +345,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   nvtop btop glances iftop bmon dstat sysstat nload traceroute mtr-tiny iperf3 rsync
 ```
 
-A stale apt index can look like a missing package. On spark2 this failed with
-`E: Unable to locate package nvtop` while spark1 succeeded, from byte-identical
-sources. `universe` was enabled and `apt-get update` reported only `Hit:` lines,
-but the universe `Packages` file had never been fetched. Force it:
+A stale apt index can look like a missing package. On spark2 this failed with `E: Unable to locate package nvtop` while spark1 succeeded, from byte-identical sources. `universe` was enabled and `apt-get update` reported only `Hit:` lines, but the universe `Packages` file had never been fetched. Force it:
 
 ```bash
 sudo rm -f /var/lib/apt/lists/ports.ubuntu.com_*
@@ -408,8 +353,7 @@ sudo apt-get update
 apt-cache policy nvtop        # Candidate: 3.0.2-1
 ```
 
-One missing package aborts the whole `apt-get install`, so nothing else in the
-list gets installed either. Check rather than assume:
+One missing package aborts the whole `apt-get install`, so nothing else in the list gets installed either. Check rather than assume:
 
 ```bash
 for t in nvtop btop glances iftop bmon dstat nload sar iostat htop; do
@@ -417,18 +361,13 @@ for t in nvtop btop glances iftop bmon dstat nload sar iostat htop; do
 done
 ```
 
-`nvtop` detects the GB10 and reports utilisation, temperature, power and
-per-process GPU usage, but shows `MEM: N/A` because there is no discrete VRAM.
-Use `free -h` for memory. See `MONITORING.md` for dashboards and streaming
-commands.
+`nvtop` detects the GB10 and reports utilisation, temperature, power and per-process GPU usage, but shows `MEM: N/A` because there is no discrete VRAM. Use `free -h` for memory. See `MONITORING.md` for dashboards and streaming commands.
 
 ---
 
 ## 9. Verification benchmarks
 
-Not required to reach a working state, but these establish the baseline the
-cluster should reproduce after a rebuild. Results and interpretation are in
-`FINDINGS.md`.
+Not required to reach a working state, but these establish the baseline the cluster should reproduce after a rebuild. Results and interpretation are in `FINDINGS.md`.
 
 ### 9a. GPU memory bandwidth
 
@@ -444,8 +383,7 @@ cat bench/gpubw.cu | ssh -F .ssh/config <node> \
    "cat > /g.cu && nvcc -O3 -arch=sm_121 -o /g /g.cu && /g"'
 ```
 
-Piping the source over stdin avoids a host bind mount. Detect the architecture
-rather than guessing it.
+Piping the source over stdin avoids a host bind mount. Detect the architecture rather than guessing it.
 
 Expect read bandwidth near 261 GB/s, which is 96% of the 273 GB/s theoretical.
 
@@ -463,14 +401,11 @@ tar -C bench -c Dockerfile.nccl allreduce_bw.cu \
   | ssh -F .ssh/config <node> 'docker build -q -t nccl-bench:bin -f Dockerfile.nccl -'
 ```
 
-`libnccl2` is already present in the CUDA base image at 2.27.7. Installing
-`libnccl-dev` unpinned pulls 2.31.2 and fails on the version conflict, so pin it.
+`libnccl2` is already present in the CUDA base image at 2.27.7. Installing `libnccl-dev` unpinned pulls 2.31.2 and fails on the version conflict, so pin it.
 
-`libibverbs1` and `ibverbs-providers` are mandatory. Without them NCCL falls back
-to `NET/Socket` and reports 1.5 GB/s while appearing healthy.
+`libibverbs1` and `ibverbs-providers` are mandatory. Without them NCCL falls back to `NET/Socket` and reports 1.5 GB/s while appearing healthy.
 
-Run with `bench/run_allreduce.sh`. Rank 0 on spark1 emits its `ncclUniqueId` as
-hex; the launcher passes it to rank 1 on spark2. No MPI needed.
+Run with `bench/run_allreduce.sh`. Rank 0 on spark1 emits its `ncclUniqueId` as hex; the launcher passes it to rank 1 on spark2. No MPI needed.
 
 Container flags, all required:
 
@@ -491,34 +426,24 @@ NCCL_SOCKET_IFNAME=enp1s0f0np0
 NCCL_IB_DISABLE=0
 ```
 
-Expect 3.04 GB/s on both paths and 25 µs for a 16 KB all-reduce. Confirm
-`NCCL_DEBUG=INFO` reports `Using network IB`.
+Expect 3.04 GB/s on both paths and 25 µs for a 16 KB all-reduce. Confirm `NCCL_DEBUG=INFO` reports `Using network IB`.
 
-GPUDirect RDMA does not work on this platform: NCCL reports `GDR 0`,
-`nvidia-peermem.ko` fails to insert, and 3 GB/s is a hard ceiling. Re-test
-`modprobe nvidia_peermem` after any driver update. If it ever loads, re-run this
-section, because a working GDR path would change the serving topology decision.
+GPUDirect RDMA does not work on this platform: NCCL reports `GDR 0`, `nvidia-peermem.ko` fails to insert, and 3 GB/s is a hard ceiling. Re-test `modprobe nvidia_peermem` after any driver update. If it ever loads, re-run this section, because a working GDR path would change the serving topology decision.
 
 ---
 
 ## 10. Model serving stack
 
-Managed by Ansible, not by hand. See `ansible/README.md` for the full
-operational guide; this section covers only what a rebuild needs.
+Managed by Ansible, not by hand. See `ansible/README.md` for the full operational guide; this section covers only what a rebuild needs.
 
-Each node runs one vLLM container under a systemd unit, serving one model, with
-no cross-node coupling. Models that fit in 121 GiB are never split, because
-NCCL collectives across the interconnect manage 3.0 GB/s and tensor parallel
-would make prefill roughly 200× slower than keeping the model local (section 9b
-and `FINDINGS.md`).
+Each node runs one vLLM container under a systemd unit, serving one model, with no cross-node coupling. Models that fit in 121 GiB are never split, because NCCL collectives across the interconnect manage 3.0 GB/s and tensor parallel would make prefill roughly 200× slower than keeping the model local (section 9b and `FINDINGS.md`).
 
-Current assignment. The nodes serve different models and are separate
-endpoints, not replicas (spark2 repointed 2026-11-06, section 20):
+Current assignment. Both nodes serve the same model since 2026-11-08 (section 22); spark2 is due to be wiped, after which spark1 is the only serving node:
 
 | Node | Model | Served as | Port | vLLM |
 |---|---|---|---|---|
-| spark1 | `Qwen/Qwen3.8-27B-FP8` | `qwen3.8-27b` | 8000 | `:latest` (0.28.0 as running) |
-| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (was `v0.28.0` until 2026-11-07) |
+| spark1 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (Qwen3.8-27B on `:latest` until 2026-11-08) |
+| spark2 | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `qwen3.6-35b-a3b` | 8000 | `v0.33.0`, pinned (was `v0.28.0` until 2026-11-07); to be wiped |
 
 From the `ansible/` directory:
 
@@ -527,42 +452,26 @@ ansible-playbook site.yml                    # both nodes
 ansible-playbook site.yml --limit spark2     # one node
 ```
 
-Per-node configuration is in `ansible/host_vars/`. Changing `ms_model_repo`
-there and re-running with `--limit` repoints one node without touching the
-other; setting `ms_enabled: false` tears its service down and frees the node.
+Per-node configuration is in `ansible/host_vars/`. Changing `ms_model_repo` there and re-running with `--limit` repoints one node without touching the other; setting `ms_enabled: false` tears its service down and frees the node.
 
-Weights are cached in `/opt/dgx-models` on each node, outside the container, so
-they survive image changes and redeployment. First run takes 30–60 minutes per
-node for a 10 GB image and 28 GB of weights.
+Weights are cached in `/opt/dgx-models` on each node, outside the container, so they survive image changes and redeployment. First run takes 30–60 minutes per node for a 10 GB image and 28 GB of weights.
 
-Two prerequisites the playbook asserts before doing anything: Docker must
-expose the `nvidia` runtime (section 5) and at least 100 GB must be free.
+Two prerequisites the playbook asserts before doing anything: Docker must expose the `nvidia` runtime (section 5) and at least 100 GB must be free.
 
 Notes that cost a run each:
 
-- `stdout_callback = yaml` fails on ansible-core 2.16. The
-  `community.general.yaml` callback was removed in v12; use
-  `result_format = yaml` with the default callback instead.
-- Do not set `ansible_host` in the inventory. The SSH config's `Host` blocks
-  match `spark1` and `spark-a01a`, not `spark-a01a.tommyslab`, so pointing Ansible
-  at the FQDN bypasses the `IdentityFile` and fails on publickey. Let the
-  inventory hostnames be the SSH aliases.
+- `stdout_callback = yaml` fails on ansible-core 2.16. The `community.general.yaml` callback was removed in v12; use `result_format = yaml` with the default callback instead.
+- Do not set `ansible_host` in the inventory. The SSH config's `Host` blocks match `spark1` and `spark-a01a`, not `spark-a01a.tommyslab`, so pointing Ansible at the FQDN bypasses the `IdentityFile` and fails on publickey. Let the inventory hostnames be the SSH aliases.
 
-`ms_gpu_memory_utilization` defaults to 0.80 rather than the usual 0.90. GB10
-shares one 121 GiB pool between CPU and GPU, so whatever vLLM reserves is taken
-from the host, not from spare VRAM.
+`ms_gpu_memory_utilization` defaults to 0.80 rather than the usual 0.90. GB10 shares one 121 GiB pool between CPU and GPU, so whatever vLLM reserves is taken from the host, not from spare VRAM.
 
 ---
 
 ## 11. AWS infrastructure `[workstation]`
 
-OpenTofu, pinned to 1.12.6 by `required_version` so tenv selects it
-automatically. Profile `isc-eng-hpcresearch-dev`, account 376129860391,
-region us-west-2.
+OpenTofu, pinned to 1.12.6 by `required_version` so tenv selects it automatically. Profile `isc-eng-hpcresearch-dev`, account 376129860391, region us-west-2.
 
-State lives in S3 with native conditional-write locking, so there is no
-DynamoDB lock table. The bucket cannot exist before it is created, so the
-bootstrap runs once with local state:
+State lives in S3 with native conditional-write locking, so there is no DynamoDB lock table. The bucket cannot exist before it is created, so the bootstrap runs once with local state:
 
 ```bash
 cd terraform/bootstrap && tofu init && tofu apply
@@ -575,19 +484,11 @@ Everything is tagged `createdBy = tommy.aldo.sonin` through `default_tags`.
 
 Three things worth knowing.
 
-An **S3 Gateway VPC Endpoint is required**, not optional. It is free and keeps
-every Thanos block flush and chunk fetch inside the VPC.
+An **S3 Gateway VPC Endpoint is required**, not optional. It is free and keeps every Thanos block flush and chunk fetch inside the VPC.
 
-`source_dest_check` must be false on netbird-cp, or EC2 drops forwarded
-packets.
+`source_dest_check` must be false on netbird-cp, or EC2 drops forwarded packets.
 
-**The observability subnet routes via the internet gateway, not the NAT
-instance**, despite still being named `private`. The nodes carry Elastic IPs so
-WireGuard hole punching can work; behind MASQUERADE it never could, because
-Linux does endpoint-dependent filtering and silently drops inbound hole-punch
-packets. They are not exposed: the security group admits UDP 51820 and nothing
-else, so SSH and Grafana remain overlay-only. This is what turned the
-Spark-to-AWS path from relayed at 82 ms into direct at 32 ms.
+**The observability subnet routes via the internet gateway, not the NAT instance**, despite still being named `private`. The nodes carry Elastic IPs so WireGuard hole punching can work; behind MASQUERADE it never could, because Linux does endpoint-dependent filtering and silently drops inbound hole-punch packets. They are not exposed: the security group admits UDP 51820 and nothing else, so SSH and Grafana remain overlay-only. This is what turned the Spark-to-AWS path from relayed at 82 ms into direct at 32 ms.
 
 ---
 
@@ -597,18 +498,11 @@ Spark-to-AWS path from relayed at 82 ms into direct at 32 ms.
 cd ansible && ansible-playbook aws.yml
 ```
 
-The upstream installer prompts on a TTY but reads environment variables when
-there is none, so Ansible drives it without a pty. `NETBIRD_DOMAIN` and
-`NETBIRD_LETSENCRYPT_EMAIL` are the only required ones.
+The upstream installer prompts on a TTY but reads environment variables when there is none, so Ansible drives it without a pty. `NETBIRD_DOMAIN` and `NETBIRD_LETSENCRYPT_EMAIL` are the only required ones.
 
-**Docker sets the FORWARD policy to DROP**, which silently breaks the NAT
-routing this host provides for the private subnet. Packets arrive and are
-dropped before reaching the masquerade rule, which then shows a zero packet
-count and appears correct. The accept rules must go in `DOCKER-USER`; Docker
-evaluates that chain first and never rewrites it.
+**Docker sets the FORWARD policy to DROP**, which silently breaks the NAT routing this host provides for the private subnet. Packets arrive and are dropped before reaching the masquerade rule, which then shows a zero packet count and appears correct. The accept rules must go in `DOCKER-USER`; Docker evaluates that chain first and never rewrites it.
 
-Create the first admin account by hand at `https://vpn.isc-spectro-sbx.click/setup`.
-That page exists only until the first user is created.
+Create the first admin account by hand at `https://vpn.isc-spectro-sbx.click/setup`. That page exists only until the first user is created.
 
 Groups, setup keys, policies, routes and the lockdown are declarative:
 
@@ -616,15 +510,9 @@ Groups, setup keys, policies, routes and the lockdown are declarative:
 cd ansible && ansible-playbook netbird-access.yml
 ```
 
-The desired state lives in `roles/netbird_config/defaults/main.yml`. It runs
-against the API from localhost, needs no managed host, and converges to
-`changed=0` on a second run.
+The desired state lives in `roles/netbird_config/defaults/main.yml`. It runs against the API from localhost, needs no managed host, and converges to `changed=0` on a second run.
 
-Two things that bite. Policy `ports` must be **strings**; integers are rejected
-with a null body and HTTP 200, so the failure looks like success. And the
-policy set must include the machine-to-machine paths (`sparks-to-aws`,
-`aws-internal`) — without them, disabling the All-to-All default silently takes
-telemetry to zero, because nothing logs into those paths and nothing errors.
+Two things that bite. Policy `ports` must be **strings**; integers are rejected with a null body and HTTP 200, so the failure looks like success. And the policy set must include the machine-to-machine paths (`sparks-to-aws`, `aws-internal`) — without them, disabling the All-to-All default silently takes telemetry to zero, because nothing logs into those paths and nothing errors.
 
 ---
 
@@ -634,23 +522,15 @@ telemetry to zero, because nothing logs into those paths and nothing errors.
 cd ansible && ansible-playbook observability.yml
 ```
 
-Split by role: obs-write runs Thanos receive, the compactor and Loki; obs-read
-runs Thanos query and store, Grafana and memcached. The split exists to keep
-bursty compaction away from user queries.
+Split by role: obs-write runs Thanos receive, the compactor and Loki; obs-read runs Thanos query and store, and Grafana. (A memcached container also ran there until 2026-11-10, unused; section 25.) The split exists to keep bursty compaction away from user queries.
 
-Both self-enrol into the VPN first, then the stack comes up. Data goes to
-`s3://dgx-cluster-telemetry-376129860391` via the instance profile, so no keys
-appear in any config.
+Both self-enrol into the VPN first, then the stack comes up. Data goes to `s3://dgx-cluster-telemetry-376129860391` via the instance profile, so no keys appear in any config.
 
 Three traps, each of which cost a deploy cycle:
 
-- **Container uids differ per image**: thanos 1001, loki 10001, grafana 472.
-  Read them with `docker inspect -f '{{.Config.User}}'` rather than assuming.
-  A mismatch is a permission-denied crash loop.
-- **thanos-receive binds remote-write port + 100** (19391) for remote-write
-  gRPC, which no flag reveals. The compactor uses 10903 to avoid it.
-- Thanos uses kingpin, so **boolean flags reject `=value`** and fail with
-  `error: unexpected false`.
+- **Container uids differ per image**: thanos 1001, loki 10001, grafana 472. Read them with `docker inspect -f '{{.Config.User}}'` rather than assuming. A mismatch is a permission-denied crash loop.
+- **thanos-receive binds remote-write port + 100** (19391) for remote-write gRPC, which no flag reveals. The compactor uses 10903 to avoid it.
+- Thanos uses kingpin, so **boolean flags reject `=value`** and fail with `error: unexpected false`.
 
 Datasources and dashboards are provisioned from the role, not clicked in:
 
@@ -662,27 +542,12 @@ Datasources and dashboards are provisioned from the role, not clicked in:
 
 Two more traps here:
 
-- **Grafana cannot change the uid of an already-provisioned datasource.** It
-  fails with "data source not found" and refuses to start. The template carries
-  a `deleteDatasources` stanza that removes them by name first, which makes the
-  uids (`thanos`, `loki`) stable across rebuilds. The provisioned dashboards
-  reference those uids, so they must not drift.
-- **The datasource URL must be `127.0.0.1`, not the Compose service name.**
-  These containers run with `network_mode: host`, so Docker's embedded DNS does
-  not resolve `thanos-query`. Using the service name breaks every metric panel
-  and surfaces first as a Drilldown plugin error rather than an obvious
-  connection failure.
+- **Grafana cannot change the uid of an already-provisioned datasource.** It fails with "data source not found" and refuses to start. The template carries a `deleteDatasources` stanza that removes them by name first, which makes the uids (`thanos`, `loki`) stable across rebuilds. The provisioned dashboards reference those uids, so they must not drift.
+- **The datasource URL must be `127.0.0.1`, not the Compose service name.** These containers run with `network_mode: host`, so Docker's embedded DNS does not resolve `thanos-query`. Using the service name breaks every metric panel and surfaces first as a Drilldown plugin error rather than an obvious connection failure.
 
-`allowUiUpdates` is on, so browser edits stick until the next playbook run
-overwrites them. Export anything worth keeping into
-`roles/observability/files/dashboards/`.
+`allowUiUpdates` is on, so browser edits stick until the next playbook run overwrites them. Export anything worth keeping into `roles/observability/files/dashboards/`.
 
-The Grafana admin password comes from `.secrets/grafana.yml`, loaded by
-`observability.yml` via `vars_files`. Grafana applies
-`GF_SECURITY_ADMIN_PASSWORD` only when initialising a fresh database — a
-password later changed in the UI persists and the environment variable is
-ignored — so that file must be kept in step with reality or a rebuild from an
-empty volume will come up with the `admin` default.
+The Grafana admin password comes from `.secrets/grafana.yml`, loaded by `observability.yml` via `vars_files`. Grafana applies `GF_SECURITY_ADMIN_PASSWORD` only when initialising a fresh database — a password later changed in the UI persists and the environment variable is ignored — so that file must be kept in step with reality or a rebuild from an empty volume will come up with the `admin` default.
 
 ---
 
@@ -692,26 +557,16 @@ empty volume will come up with the `admin` default.
 cd ansible && ansible-playbook telemetry.yml
 ```
 
-Installs node_exporter with the ethtool collector enabled, dcgm-exporter on GPU
-hosts, and an OpenTelemetry Collector that scrapes locally and ships metrics to
-Thanos and logs to Loki over the VPN.
+Installs node_exporter with the ethtool collector enabled, dcgm-exporter on GPU hosts, and an OpenTelemetry Collector that scrapes locally and ships metrics to Thanos and logs to Loki over the VPN.
 
-Scrape intervals are 1s for everything except vLLM at 5s: its `/metrics`
-handler runs inside the serving process, and 60 scrapes a minute against a node
-already at 105 of 121 GiB risks perturbing what is being measured.
+Scrape intervals are 1s for everything except vLLM at 5s: its `/metrics` handler runs inside the serving process, and 60 scrapes a minute against a node already at 105 of 121 GiB risks perturbing what is being measured.
 
-The collector keeps a persistent on-disk queue so a network outage does not
-lose telemetry.
+The collector keeps a persistent on-disk queue so a network outage does not lose telemetry.
 
 Two things that are easy to get wrong:
 
-- **`ansible_managed` is injected by the `template` module only.** Referencing
-  it inside `copy: content:` fails with "undefined variable", and setting it in
-  `ansible.cfg` does not help.
-- **The journald receiver puts the whole journal entry in the log body**, not
-  in attributes. A transform is needed to set `service.name` from
-  `body["_SYSTEMD_UNIT"]` and to reduce the body to `body["MESSAGE"]`.
-  Without it every log is `unknown_service` and renders as a JSON blob.
+- **`ansible_managed` is injected by the `template` module only.** Referencing it inside `copy: content:` fails with "undefined variable", and setting it in `ansible.cfg` does not help.
+- **The journald receiver puts the whole journal entry in the log body**, not in attributes. A transform is needed to set `service.name` from `body["_SYSTEMD_UNIT"]` and to reduce the body to `body["MESSAGE"]`. Without it every log is `unknown_service` and renders as a JSON blob.
 
 Verify:
 
@@ -720,14 +575,12 @@ ssh -F .ssh/config obs-read \
   'curl -s "http://127.0.0.1:19192/api/v1/query?query=up" | jq -r ".data.result[].metric|\"\(.job)@\(.node)\""'
 ```
 
-Expect node, otelcol, dcgm and vllm from both Sparks, plus the Thanos, Loki and
-Grafana components from both observability nodes.
+Expect node, otelcol, dcgm and vllm from both Sparks, plus the Thanos, Loki and Grafana components from both observability nodes.
 
 ---
 ## 15. End-to-end verification `[workstation]`
 
-Run after any rebuild. Each check fails loudly rather than degrading quietly,
-which matters because most of the faults in this build were silent.
+Run after any rebuild. Each check fails loudly rather than degrading quietly, which matters because most of the faults in this build were silent.
 
 ```bash
 # 1. VPN. Expect every peer Connected or Idle, none Disconnected.
@@ -760,15 +613,13 @@ Expected results, as measured on 2026-09-03:
 |---|---|
 | Peers connected | 2/3 from each Spark, obs-read Idle until queried |
 | `sum(up)` | 18 |
-| Loki `service_name` | `vllm.service`, `anythingllm.service`, `docker.service`, `otelcol-contrib.service`, `init.scope`, `unknown_service` |
-| `/v1/models` | `qwen3.8-27b` from spark1, `qwen3.6-35b-a3b` from spark2 (since 2026-11-06) |
+| Loki `service_name` | `vllm.service`, `openwebui.service` (both Sparks since 2026-11-08; `anythingllm.service` before that), `docker.service`, `otelcol-contrib.service`, `init.scope`, `unknown_service` |
+| `/v1/models` | `qwen3.6-35b-a3b` from both (spark1 since 2026-11-08, spark2 since 2026-11-06) |
 | Grafana health | `ok`, version 13.0.8 |
 
-`unknown_service` in that list is expected, not a fault: kernel messages carry
-no systemd unit, so the transform has nothing to set `service.name` from.
+`unknown_service` in that list is expected, not a fault: kernel messages carry no systemd unit, so the transform has nothing to set `service.name` from.
 
-A `sum(up)` below 18 with everything else healthy is usually a single exporter,
-not a network fault. Check the breakdown before touching the VPN.
+A `sum(up)` below 18 with everything else healthy is usually a single exporter, not a network fault. Check the breakdown before touching the VPN.
 
 ---
 
@@ -780,24 +631,15 @@ cd ansible && ansible-playbook site.yml
 
 Two independent controls, because neither is sufficient alone.
 
-**Per-client API keys.** `ms_api_keys` in `.secrets/vllm-keys.yml`, one entry
-per client, rendered into the unit. Revoke by deleting an entry and re-running.
+**Per-client API keys.** `ms_api_keys` in `.secrets/vllm-keys.yml`, one entry per client, rendered into the unit. Revoke by deleting an entry and re-running.
 
 > All keys must go on a **single** `--api-key` flag. The argument is
 > `nargs='+'`, so repeating the flag keeps only the last value and every other
 > client gets 401 with nothing logged at startup to explain it.
 
-**Source-network allowlist.** `ms_allowed_cidrs`, applied by
-`vllm-firewall.service` into DOCKER-USER. This exists because `--api-key` only
-guards `/v1`, `/v2` and `/inference`: **`/invocations` offers the same inference
-and is unauthenticated**, so keys alone are bypassable in one request. Being
-network-level, the allowlist covers it.
+**Source-network allowlist.** `ms_allowed_cidrs`, applied by `vllm-firewall.service` into DOCKER-USER. This exists because `--api-key` only guards `/v1`, `/v2` and `/inference`: **`/invocations` offers the same inference and is unauthenticated**, so keys alone are bypassable in one request. Being network-level, the allowlist covers it.
 
-The rules must go in DOCKER-USER and be inserted, not appended: that chain ends
-in a `RETURN`, so an appended rule is never reached. Rules are tagged with an
-iptables comment so a re-run removes its predecessors rather than stacking.
-The unit is enabled because Docker rebuilds its chains on restart and discards
-them.
+The rules must go in DOCKER-USER and be inserted, not appended: that chain ends in a `RETURN`, so an appended rule is never reached. Rules are tagged with an iptables comment so a re-run removes its predecessors rather than stacking. The unit is enabled because Docker rebuilds its chains on restart and discards them.
 
 Verify:
 
@@ -818,28 +660,18 @@ curl -o /dev/null -m 8 -w '%{http_code}\n' \
 cd ansible && ansible-playbook admin-users.yml
 ```
 
-Key-only, NOPASSWD sudo accounts, distinct from the per-service accounts
-(`claude`, `ubuntu`) that own the deployed workloads. Defined in
-`admin-users.yml`, applied by the `admin_users` role: create the account,
-install its public key(s), then write a dedicated `/etc/sudoers.d/<file>`
-granting `ALL=(ALL) NOPASSWD:ALL`, validated with `visudo -cf` before it
-replaces anything on disk.
+Key-only, NOPASSWD sudo accounts, distinct from the per-service accounts (`claude`, `ubuntu`) that own the deployed workloads. Defined in `admin-users.yml`, applied by the `admin_users` role: create the account, install its public key(s), then write a dedicated `/etc/sudoers.d/<file>` granting `ALL=(ALL) NOPASSWD:ALL`, validated with `visudo -cf` before it replaces anything on disk.
 
-NOPASSWD, not just `sudo`-group membership: these accounts have no password
-set, so an interactive sudo prompt would be a lockout rather than a
-safeguard.
+NOPASSWD, not just `sudo`-group membership: these accounts have no password set, so an interactive sudo prompt would be a lockout rather than a safeguard.
 
-The role is additive per play — a play only touches the users listed in its
-own `admin_users` var, never removing an account outside that list. Two plays
-in `admin-users.yml`:
+The role is additive per play — a play only touches the users listed in its own `admin_users` var, never removing an account outside that list. Two plays in `admin-users.yml`:
 
 | Account | Scope | sudoers file |
 |---|---|---|
 | `tommy.aldo.sonin` | both Sparks, both observability nodes | `/etc/sudoers.d/sudobasher` |
 | `alex.scammon` | spark2 only | `/etc/sudoers.d/vanguard` |
 
-netbird-cp is not in scope for either; add a third play if a login is needed
-there too.
+netbird-cp is not in scope for either; add a third play if a login is needed there too.
 
 Verify:
 
@@ -850,45 +682,29 @@ ansible spark2 -b --become-user alex.scammon -a 'whoami'
 
 ### VPN access for a new person
 
-A dedicated, single-use NetBird setup key, not the shared `teammate-device`
-key, so the grant is individually attributable and revocable:
+A dedicated, single-use NetBird setup key, not the shared `teammate-device` key, so the grant is individually attributable and revocable:
 
 ```yaml
 # roles/netbird_config/defaults/main.yml
 - { name: alex.scammon, groups: [teammates], usage_limit: 1 }
 ```
 
-`usage_limit: 1` selects `type: one-off` in the role — the key stops working
-after first use, so handing it to one person doesn't hand it to whoever else
-sees it.
+`usage_limit: 1` selects `type: one-off` in the role — the key stops working after first use, so handing it to one person doesn't hand it to whoever else sees it.
 
-**Trap:** the `uri` module's `body:` truncates when a YAML dict mixes a value
-built from a Jinja conditional with a value built from a filter chain (here,
-`type` from an `if/else` and `usage_limit` from `default()`) — the request
-lands as a 53-byte fragment of the intended ~170 bytes and the API returns
-`400 couldn't parse JSON request`, with no indication that the body itself was
-the problem. The fix is to render the whole body as one string with `to_json`
-rather than letting the module template a dict of independently-templated
-values:
+**Trap:** the `uri` module's `body:` truncates when a YAML dict mixes a value built from a Jinja conditional with a value built from a filter chain (here, `type` from an `if/else` and `usage_limit` from `default()`) — the request lands as a 53-byte fragment of the intended ~170 bytes and the API returns `400 couldn't parse JSON request`, with no indication that the body itself was the problem. The fix is to render the whole body as one string with `to_json` rather than letting the module template a dict of independently-templated values:
 
 ```yaml
 body: >-
   {{ { 'name': item.name, 'type': (...), 'usage_limit': (...), ... } | to_json }}
 ```
 
-The four pre-existing keys never hit this because none of their fields used a
-filter or a conditional — literal `type: reusable` and `usage_limit: 0`
-templated fine as plain dict values.
+The four pre-existing keys never hit this because none of their fields used a filter or a conditional — literal `type: reusable` and `usage_limit: 0` templated fine as plain dict values.
 
 ### Reissuing an expired one-off key
 
-2026-10-14: `alex.scammon` needed a key for a new laptop. The key issued
-2026-09-04 had expired unused on 2026-10-04 — `nbcfg_setup_key_ttl` is 30 days
-and the clock starts at creation, not at first use.
+2026-10-14: `alex.scammon` needed a key for a new laptop. The key issued 2026-09-04 had expired unused on 2026-10-04 — `nbcfg_setup_key_ttl` is 30 days and the clock starts at creation, not at first use.
 
-The role creates a setup key only when no key of that name exists, and has no
-update or delete path, so re-running the playbook does not refresh an expired
-key. A reissue is therefore a new entry under a new name:
+The role creates a setup key only when no key of that name exists, and has no update or delete path, so re-running the playbook does not refresh an expired key. A reissue is therefore a new entry under a new name:
 
 ```yaml
 # roles/netbird_config/defaults/main.yml
@@ -899,20 +715,11 @@ key. A reissue is therefore a new entry under a new name:
 cd ansible && ansible-playbook netbird-access.yml 2>&1 | tee ../logs/netbird-access-20261014.log
 ```
 
-The key value prints once, in the "Report any newly issued setup keys" task,
-and is then only retrievable from `.secrets/netbird-keys.yml` where it is
-recorded by hand. Verify by re-running: the create task skips and the report
-task prints nothing (ok drops 14 -> 12, skipped rises 4 -> 6).
+The key value prints once, in the "Report any newly issued setup keys" task, and is then only retrievable from `.secrets/netbird-keys.yml` where it is recorded by hand. Verify by re-running: the create task skips and the report task prints nothing (ok drops 14 -> 12, skipped rises 4 -> 6).
 
-The dead `alex.scammon` key stays in NetBird and in the defaults, commented, so
-the name stays taken and the next reader sees why there are two entries. Delete
-both the NetBird key and the entry if the accumulation starts to matter — the
-dashboard's Setup Keys page is the list that counts.
+The dead `alex.scammon` key stays in NetBird and in the defaults, commented, so the name stays taken and the next reader sees why there are two entries. Delete both the NetBird key and the entry if the accumulation starts to matter — the dashboard's Setup Keys page is the list that counts.
 
-Every other setup key was also expired at this point (`valid: false` on all
-six), which blocks new enrollments but not existing peers — an enrolled peer
-holds its own credentials and never re-reads the setup key. Worth a role change
-that reissues on expiry rather than six more manual renames.
+Every other setup key was also expired at this point (`valid: false` on all six), which blocks new enrollments but not existing peers — an enrolled peer holds its own credentials and never re-reads the setup key. Worth a role change that reissues on expiry rather than six more manual renames.
 
 ---
 
@@ -922,44 +729,17 @@ that reissues on expiry rather than six more manual renames.
 cd ansible && ansible-playbook telemetry.yml --limit netbird-cp
 ```
 
-netbird-cp was outside the telemetry fleet until now — it runs no client, so
-it has no overlay address, unlike every other host this project ships logs or
-metrics from. `group_vars/aws.yml` routes it to obs-write's **VPC-private IP**
-(`10.200.10.116`) instead; both instances sit in the same VPC and the
-observability security group already admits all in-VPC traffic
-(`obs_from_vpc` in `terraform/security.tf`), so this needed no firewall change.
+netbird-cp was outside the telemetry fleet until now — it runs no client, so it has no overlay address, unlike every other host this project ships logs or metrics from. `group_vars/aws.yml` routes it to obs-write's **VPC-private IP** (`10.200.10.116`) instead; both instances sit in the same VPC and the observability security group already admits all in-VPC traffic (`obs_from_vpc` in `terraform/security.tf`), so this needed no firewall change.
 
-Logs only at first: `tel_enable_node_exporter: false` skipped installing
-node_exporter altogether, rather than running it with nothing scraping it.
-Later reversed - `tel_enable_node_exporter: true` plus a `node` scrape job -
-once host CPU/memory/disk on netbird-cp was wanted on the Fleet health
-dashboard too. Its panels carry no node filter, so nothing needed changing
-there; the fix was entirely in `group_vars/aws.yml`.
+Logs only at first: `tel_enable_node_exporter: false` skipped installing node_exporter altogether, rather than running it with nothing scraping it. Later reversed - `tel_enable_node_exporter: true` plus a `node` scrape job - once host CPU/memory/disk on netbird-cp was wanted on the Fleet health dashboard too. Its panels carry no node filter, so nothing needed changing there; the fix was entirely in `group_vars/aws.yml`.
 
-One thing to expect and not read as broken: the CPU panel shows a spike
-(spuriously as high as 80%) for the first ~30-60s after node_exporter starts
-or restarts. `rate()` is measuring a partial, not-yet-full window at that
-point; it settles as more samples accumulate. `top` on the host is the
-ground truth if a reading looks wrong right after a redeploy.
+One thing to expect and not read as broken: the CPU panel shows a spike (spuriously as high as 80%) for the first ~30-60s after node_exporter starts or restarts. `rate()` is measuring a partial, not-yet-full window at that point; it settles as more samples accumulate. `top` on the host is the ground truth if a reading looks wrong right after a redeploy.
 
 Two things that broke on the first attempt:
 
-**An empty `tel_scrape_jobs` is not "zero metrics."** The collector's pipeline
-unconditionally references the `prometheus` receiver, and a receiver with no
-`scrape_configs` fails its own validation — `no Prometheus scrape_configs or
-target_allocator set` — which crash-loops the whole collector, logs included,
-not just metrics. The fix: give netbird-cp the same self-scrape job every
-other host already carries (`otelcol` → `127.0.0.1:8888`), the minimum that
-keeps the receiver valid.
+**An empty `tel_scrape_jobs` is not "zero metrics."** The collector's pipeline unconditionally references the `prometheus` receiver, and a receiver with no `scrape_configs` fails its own validation — `no Prometheus scrape_configs or target_allocator set` — which crash-loops the whole collector, logs included, not just metrics. The fix: give netbird-cp the same self-scrape job every other host already carries (`otelcol` → `127.0.0.1:8888`), the minimum that keeps the receiver valid.
 
-**thanos-receive's remote-write listener was bound to the overlay IP only**
-(`--remote-write.address={{ obs_write_ip }}:19291`), so even with the VPC
-route and security group in place, nothing was listening on the VPC-private
-address netbird-cp actually connects to — `context deadline exceeded`,
-repeating every scrape interval. The security group, not that bind, is the
-real boundary: anything in the VPC already reaches every port on obs-write.
-Widened to `0.0.0.0:19291` to match how `--grpc-address` and `--http-address`
-were already bound on the same line above it.
+**thanos-receive's remote-write listener was bound to the overlay IP only** (`--remote-write.address={{ obs_write_ip }}:19291`), so even with the VPC route and security group in place, nothing was listening on the VPC-private address netbird-cp actually connects to — `context deadline exceeded`, repeating every scrape interval. The security group, not that bind, is the real boundary: anything in the VPC already reaches every port on obs-write. Widened to `0.0.0.0:19291` to match how `--grpc-address` and `--http-address` were already bound on the same line above it.
 
 Verify:
 
@@ -971,47 +751,24 @@ curl -s --get http://100.123.229.83:19192/api/v1/query \
 
 ### SSH auth logs, fleet-wide
 
-Both Sparks now ship `ssh.service` alongside the units they already carried
-(`group_vars/sparks.yml`). Combined with netbird-cp above, all three
-non-observability hosts now surface sshd authentication events in Loki, with
-two Logs panels on the **Fleet health** dashboard's new Security row:
+Both Sparks now ship `ssh.service` alongside the units they already carried (`group_vars/sparks.yml`). Combined with netbird-cp above, all three non-observability hosts now surface sshd authentication events in Loki, with two Logs panels on the **Fleet health** dashboard's new Security row:
 
 | Panel | Query |
 |---|---|
 | SSH auth — Sparks | `{service_name="ssh.service"} \| node =~ "spark1\|spark2"` |
 | SSH auth — NetBird control plane | `{service_name="ssh.service"} \| node =~ "netbird-cp"` |
 
-The second one is host login to netbird-cp, not NetBird's own dashboard or
-management-API authentication, which is a separate signal covered next.
+The second one is host login to netbird-cp, not NetBird's own dashboard or management-API authentication, which is a separate signal covered next.
 
 ### VPN auth, distinct from host login
 
-NetBird's own containers (`netbird-server`, `netbird-dashboard`,
-`netbird-traefik`) are managed by `docker compose`, generated by NetBird's own
-installer script, and logged to per-container `json-file` on disk by default —
-invisible to a journald-based pipeline no matter what unit list it carries.
+NetBird's own containers (`netbird-server`, `netbird-dashboard`, `netbird-traefik`) are managed by `docker compose`, generated by NetBird's own installer script, and logged to per-container `json-file` on disk by default — invisible to a journald-based pipeline no matter what unit list it carries.
 
-Getting these into Loki as their own service, not merged into `docker.service`
-with every other daemon message, took two changes, both in `roles/netbird_server`:
+Getting these into Loki as their own service, not merged into `docker.service` with every other daemon message, took two changes, both in `roles/netbird_server`:
 
-**A Compose override file, not a daemon default.** `/etc/docker/daemon.json`
-setting `log-driver: journald` looked sufficient but was not: the vendor
-compose file pins `driver: json-file` explicitly per service, and an explicit
-per-service value always wins over the daemon default. Compose auto-merges a
-`docker-compose.override.yml` placed alongside the vendor file, which is how
-this changes without editing a file the installer script owns and could
-regenerate. Containers must also be recreated, not just restarted — the log
-driver is fixed at container-create time.
+**A Compose override file, not a daemon default.** `/etc/docker/daemon.json` setting `log-driver: journald` looked sufficient but was not: the vendor compose file pins `driver: json-file` explicitly per service, and an explicit per-service value always wins over the daemon default. Compose auto-merges a `docker-compose.override.yml` placed alongside the vendor file, which is how this changes without editing a file the installer script owns and could regenerate. Containers must also be recreated, not just restarted — the log driver is fixed at container-create time.
 
-**The transform must check `CONTAINER_NAME` before `_SYSTEMD_UNIT`.** Even
-with the journald driver, `_SYSTEMD_UNIT` on every entry is still
-`docker.service` — the daemon, not the container, is journald's attribution
-point. `CONTAINER_NAME` (present only on docker-journald-driver entries, with
-a leading slash) is what actually identifies which container wrote it, so it
-must be checked first, before the existing `_SYSTEMD_UNIT` fallback collapses
-everything into `docker.service`. `netbird-cp`'s `docker` unit stays in
-`tel_journal_units` for this reason — it is the daemon's attribution, not a
-per-container one, that makes these entries visible to the receiver at all.
+**The transform must check `CONTAINER_NAME` before `_SYSTEMD_UNIT`.** Even with the journald driver, `_SYSTEMD_UNIT` on every entry is still `docker.service` — the daemon, not the container, is journald's attribution point. `CONTAINER_NAME` (present only on docker-journald-driver entries, with a leading slash) is what actually identifies which container wrote it, so it must be checked first, before the existing `_SYSTEMD_UNIT` fallback collapses everything into `docker.service`. `netbird-cp`'s `docker` unit stays in `tel_journal_units` for this reason — it is the daemon's attribution, not a per-container one, that makes these entries visible to the receiver at all.
 
 Verify:
 
@@ -1020,9 +777,7 @@ ansible netbird-cp -b -m shell -a   'docker inspect --format "{{ "{{" }}.HostCon
 curl -s --get http://100.123.158.113:3100/loki/api/v1/label/service_name/values   | jq -r '.data[]'
 ```
 
-Expect `journald`, and `netbird-server` / `netbird-dashboard` / `netbird-traefik`
-each as their own entry in the label list — the same way `vllm.service` and
-`ssh.service` already are.
+Expect `journald`, and `netbird-server` / `netbird-dashboard` / `netbird-traefik` each as their own entry in the label list — the same way `vllm.service` and `ssh.service` already are.
 
 ---
 
@@ -1032,20 +787,11 @@ each as their own entry in the label list — the same way `vllm.service` and
 cd ansible && ansible-playbook observability.yml --limit obs-read
 ```
 
-Declarative, via Grafana's own HTTP API — `obs_grafana_users` in
-`.secrets/grafana.yml`, one entry per named account: `login`, `name`,
-`password`, `is_admin`. Applied after the health-check wait, since it needs
-the live API, not just the rendered config.
+Declarative, via Grafana's own HTTP API — `obs_grafana_users` in `.secrets/grafana.yml`, one entry per named account: `login`, `name`, `password`, `is_admin`. Applied after the health-check wait, since it needs the live API, not just the rendered config.
 
-`is_admin: true` sets both switches Grafana treats separately: the
-organisation role (`Admin`, via `PATCH /api/org/users/:id`) and the
-server-wide flag (`isGrafanaAdmin`, via `PUT /api/admin/users/:id/permissions`).
-A dashboard-only account would need neither.
+`is_admin: true` sets both switches Grafana treats separately: the organisation role (`Admin`, via `PATCH /api/org/users/:id`) and the server-wide flag (`isGrafanaAdmin`, via `PUT /api/admin/users/:id/permissions`). A dashboard-only account would need neither.
 
-The `uri` module doesn't compute a changed flag for a POST on its own, so
-every task in this block reports `ok` even on first creation — that's normal,
-not a sign nothing happened. Verify with the account's own credentials, not
-the task output:
+The `uri` module doesn't compute a changed flag for a POST on its own, so every task in this block reports `ok` even on first creation — that's normal, not a sign nothing happened. Verify with the account's own credentials, not the task output:
 
 ```bash
 curl -s -u '<login>:<password>' http://100.123.229.83:3000/api/user
@@ -1061,10 +807,7 @@ curl -s -u '<login>:<password>' http://100.123.229.83:3000/api/user
 cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-20261106.log
 ```
 
-Repointed 2026-11-06. spark2 stops being a replica of spark1 and becomes the
-fast node: a mixture-of-experts model with ~3B parameters active per token,
-quantised to 4-bit. spark1 keeps the dense Qwen3.8-27B for work that needs the
-deeper model.
+Repointed 2026-11-06. spark2 stops being a replica of spark1 and becomes the fast node: a mixture-of-experts model with ~3B parameters active per token, quantised to 4-bit. spark1 keeps the dense Qwen3.8-27B for work that needs the deeper model. (Superseded 2026-11-08: spark1 now runs this same setup, section 22, and spark2 is due to be wiped.)
 
 | | spark1 | spark2 |
 |---|---|---|
@@ -1075,43 +818,23 @@ deeper model.
 | Weights on disk | 29 GB | 22 GB |
 | Cold start | ~7 min | 3 min 28 s |
 
-*Table 20.1. Both nodes measured 2026-11-06, same prompt, 512 output tokens
-with `ignore_eos`, thinking off, one warm-up then three runs each. Runs varied
-by less than 0.2 tok/s.*
+*Table 20.1. Both nodes measured 2026-11-06, same prompt, 512 output tokens with `ignore_eos`, thinking off, one warm-up then three runs each. Runs varied by less than 0.2 tok/s.*
 
-Decode on GB10 is bound by memory bandwidth, so speed tracks the bytes read per
-token. The 27B reads all ~28 GB of its weights for every token; the MoE reads
-only the experts the router picks. That ratio, not any serving flag, is the
-9.2x.
+Decode on GB10 is bound by memory bandwidth, so speed tracks the bytes read per token. The 27B reads all ~28 GB of its weights for every token; the MoE reads only the experts the router picks. That ratio, not any serving flag, is the 9.2x.
 
 ### What changed
 
 Everything is in `ansible/host_vars/spark2.yml`; the role is untouched.
 
 - `ms_model_repo` and `ms_served_name` point at the NVFP4 checkpoint.
-- `ms_image` was pinned to `vllm/vllm-openai:v0.28.0` (moved to `v0.33.0` on
-  2026-11-07, see below). `:latest` had moved to
-  0.33.0, and 0.28.0 is both what the vLLM GB10 recipe measured on and the
-  minimum at which FlashInfer selects its XQA decode kernel on SM12x for NVFP4.
-  The tag resolved to the image already on disk (`61fc8a896b0a`), so nothing
-  new was pulled.
-- `ms_gpu_memory_utilization: 0.5`, the recipe's cap for Spark. vLLM holds
-  20.4 GiB of weights plus a 1.4M-token KV cache (5.4 concurrent requests at
-  full 262144 context); the host keeps ~71 GiB.
-- `ms_extra_args` carries the recipe's serving flags: fp8 KV cache, FlashInfer
-  attention, Marlin MoE, `--max-num-seqs 8`, chunked prefill, async
-  scheduling, prefix caching, fastsafetensors loading. Each was checked
-  against `vllm serve --help=all` in the pinned image before deploying (this
-  needs `--gpus all`; without a GPU the parser itself crashes).
-- `ms_weights_peer` is removed. spark1 doesn't hold this model, so the role
-  downloads from Hugging Face directly.
+- `ms_image` was pinned to `vllm/vllm-openai:v0.28.0` (moved to `v0.33.0` on 2026-11-07, see below). `:latest` had moved to 0.33.0, and 0.28.0 is both what the vLLM GB10 recipe measured on and the minimum at which FlashInfer selects its XQA decode kernel on SM12x for NVFP4. The tag resolved to the image already on disk (`61fc8a896b0a`), so nothing new was pulled.
+- `ms_gpu_memory_utilization: 0.5`, the recipe's cap for Spark. vLLM holds 20.4 GiB of weights plus a 1.4M-token KV cache (5.4 concurrent requests at full 262144 context); the host keeps ~71 GiB.
+- `ms_extra_args` carries the recipe's serving flags: fp8 KV cache, FlashInfer attention, Marlin MoE, `--max-num-seqs 8`, chunked prefill, async scheduling, prefix caching (turned off 2026-11-08, see the known issue), fastsafetensors loading. Each was checked against `vllm serve --help=all` in the pinned image before deploying (this needs `--gpus all`; without a GPU the parser itself crashes).
+- `ms_weights_peer` is removed. spark1 doesn't hold this model, so the role downloads from Hugging Face directly.
 
 ### Gap to the recipe
 
-The recipe reports 97.7 tok/s on the same hardware and vLLM version; this
-deployment does 77.1. The likely difference is `VLLM_USE_RUST_FRONTEND=1`,
-which the recipe sets and the role can't, because `vllm.service.j2` has no
-environment passthrough. Untested.
+The recipe reports 97.7 tok/s on the same hardware and vLLM version; this deployment does 77.1. The likely difference is `VLLM_USE_RUST_FRONTEND=1`, which the recipe sets and the role can't, because `vllm.service.j2` has no environment passthrough. Untested.
 
 ### Verify
 
@@ -1119,14 +842,11 @@ environment passthrough. Untested.
 ansible spark2 -m shell -a 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health'   # 200
 ```
 
-The play's own last task prints `spark2 serving qwen3.6-35b-a3b on port 8000`
-after an authenticated `/v1/models`.
+The play's own last task prints `spark2 serving qwen3.6-35b-a3b on port 8000` after an authenticated `/v1/models`.
 
 ### Roll back
 
-Revert `host_vars/spark2.yml` and re-run the same command. The Qwen3.8-27B
-weights are still in `/opt/dgx-models`, so a rollback is a restart, not a
-download.
+Revert `host_vars/spark2.yml` and re-run the same command. The Qwen3.8-27B weights are still in `/opt/dgx-models`, so a rollback is a restart, not a download.
 
 ### AnythingLLM on spark2
 
@@ -1141,13 +861,9 @@ allm_enabled: true
 allm_llm_model: qwen3.6-35b-a3b
 ```
 
-No key is entered by hand. The role takes the `anythingllm` entry from
-`.secrets/vllm-keys.yml` and writes it into the container's environment, so
-spark2's front end authenticates to spark2's vLLM with its own revocable
-credential. vLLM was not restarted.
+No key is entered by hand. The role takes the `anythingllm` entry from `.secrets/vllm-keys.yml` and writes it into the container's environment, so spark2's front end authenticates to spark2's vLLM with its own revocable credential. vLLM was not restarted.
 
-Verify that the container itself can reach and authenticate to vLLM, which is
-the link the browser check doesn't cover:
+Verify that the container itself can reach and authenticate to vLLM, which is the link the browser check doesn't cover:
 
 ```bash
 ansible spark2 -b -m shell -a "docker exec anythingllm node -e 'fetch(process.env.GENERIC_OPEN_AI_BASE_PATH+\"/models\",{headers:{Authorization:\"Bearer \"+process.env.GENERIC_OPEN_AI_API_KEY}}).then(async r=>console.log(r.status,(await r.json()).data.map(m=>m.id)))'"
@@ -1155,25 +871,18 @@ ansible spark2 -b -m shell -a "docker exec anythingllm node -e 'fetch(process.en
 curl -s -o /dev/null -w '%{http_code}\n' http://100.123.5.235:3001/api/ping   # 200, over the VPN
 ```
 
-First visit to http://100.123.5.235:3001 runs AnythingLLM's own instance
-setup. Accounts, workspaces and documents are separate from spark1's.
+First visit to http://100.123.5.235:3001 runs AnythingLLM's own instance setup. Accounts, workspaces and documents are separate from spark1's.
 
 ### Known issue: one engine crash, not reproduced
 
-2026-11-06 16:09:34, on the first AnythingLLM traffic: vLLM's engine died with
-`torch.AcceleratorError: CUDA error: unknown error` inside the hybrid model's
-linear-attention layer (`mamba/gdn/qwen_gdn_linear_attn.py`,
-`_forward_core_fused_norm`) while prefilling a 990-token prompt. systemd
-restarted it (`NRestarts=1`) and it served again at 16:11:42. AnythingLLM
-reports the gap as "The agent model failed to respond: Connection error".
+2026-11-06 16:09:34, on the first AnythingLLM traffic: vLLM's engine died with `torch.AcceleratorError: CUDA error: unknown error` inside the hybrid model's linear-attention layer (`mamba/gdn/qwen_gdn_linear_attn.py`, `_forward_core_fused_norm`) while prefilling a 990-token prompt. systemd restarted it (`NRestarts=1`) and it served again at 16:11:42. AnythingLLM reports the gap as "The agent model failed to respond: Connection error".
 
 What it was not:
 
 - Not a driver or hardware fault: no NVRM/Xid line in `journalctl -k`.
 - Not prompt length: prompts of 53 to 4,269 tokens all succeeded afterwards.
 - Not a prefix-cache hit: the dump shows `hits=0` for that request.
-- Not the agent request shape: seven streamed requests with four tools,
-  thinking on, temperature 1.0 and concurrent pairs, all succeeded.
+- Not the agent request shape: seven streamed requests with four tools, thinking on, temperature 1.0 and concurrent pairs, all succeeded.
 
 The crash dump is in the journal:
 
@@ -1181,21 +890,57 @@ The crash dump is in the journal:
 ansible spark2 -b -m shell -a "journalctl -u vllm --since '2026-11-06 16:09:30' --until '2026-11-06 16:09:40' -o cat"
 ```
 
-If it recurs, `systemctl show vllm -p NRestarts` counts it. The flags the
-recipe itself calls experimental on hybrid models, `--enable-prefix-caching`
-and `--async-scheduling`, are the first suspects to drop from `ms_extra_args`;
-moving to a newer vLLM image is the second.
+If it recurs, `systemctl show vllm -p NRestarts` counts it. The flags the recipe itself calls experimental on hybrid models, `--enable-prefix-caching` and `--async-scheduling`, are the first suspects to drop from `ms_extra_args`; moving to a newer vLLM image is the second.
+
+It recurred 2026-11-08 00:02:54, now on vLLM 0.33.0, so the version upgrade didn't fix it. Same signature: `CUDA error: unknown error` in `qwen_gdn_linear_attn.py` (`_forward_core`, via `qwen3_next.py` and `qwen3_5.py`), no Xid in the kernel log, one request running. Down 1 min 49 s, back at 00:04:43.
+
+| | 2026-11-06 16:09 | 2026-11-08 00:02 |
+|---|---|---|
+| vLLM | 0.28.0 | 0.33.0 |
+| Front end | AnythingLLM | Open WebUI |
+| Prompt tokens | 990 | 7,413 |
+| Served from prefix cache | 0 | 6,336 |
+| Newly prefilled this step | 990 | 1,077 |
+
+*Table 20.3. Both crashes. Each hit the first or second real request from a newly deployed front end.*
+
+The second one was a prefix-cache hit (6,336 of 7,413 tokens already computed), which points at the experimental hybrid-model prefix caching. The first wasn't, so caching may not be the whole story.
+
+Open WebUI shows the outage two ways. The request in flight gets "The server had an error while processing your request." (vLLM's 500). Prompts sent while vLLM is restarting get "Model '' was not found": Open WebUI can't fetch the model list (`Connect call failed ('172.17.0.1', 8000)`), so the chat goes out with no model. Both clear once vLLM is back.
+
+#### Crash test and prefix caching off (2026-11-08)
+
+A crash test replayed the shape of the second crash: six rounds of a fresh ~5k-token conversation, each followed by a ~5.8k-token turn that reuses most of it from the cache. Thinking on, streamed, `max_tokens` 300.
+
+| | Requests | Cache hit rate | Engine restarts |
+|---|---|---|---|
+| Prefix caching on | 12 | 32-39% once follow-ups started | 0 |
+| Prefix caching off | 12 | not logged (off) | 0 |
+
+*Table 20.4. The crash didn't reproduce with caching on, so the run after the change shows nothing broke, not that the fault is fixed. Only time without a recurrence can show that.*
+
+Prefix caching is now off, explicitly, in `host_vars/spark2.yml`:
+
+```yaml
+- --no-enable-prefix-caching
+```
+
+Explicit because omitting `--enable-prefix-caching` leaves vLLM's own default in charge. Verify against the engine's config dump, not the unit file:
+
+```bash
+ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep -oE 'enable_prefix_caching=[A-Za-z]+' | tail -1"
+# enable_prefix_caching=False
+```
+
+The cost is a re-prefill of shared prompt text on every turn, about a second per 6k tokens at the measured ~6,000 tok/s. If the crash recurs with caching off, `--async-scheduling` is next, then reporting it upstream with the dump from `dump_input.py`.
+
+The crash-test script lives in this session's scratchpad, not the repo. Its pattern is the table above: varied filler text so rounds don't share a prefix, then a follow-up that does.
 
 ### Replies cut off mid-thought: AnythingLLM's 1024-token cap
 
-Symptom: a reply that is all reasoning and stops mid-sentence, with no answer.
-Not a crash. vLLM counts it as `finished_reason="length"` in
-`vllm:request_success_total`, and `NRestarts` doesn't move.
+Symptom: a reply that is all reasoning and stops mid-sentence, with no answer. Not a crash. vLLM counts it as `finished_reason="length"` in `vllm:request_success_total`, and `NRestarts` doesn't move.
 
-AnythingLLM's Generic OpenAI provider sends `max_tokens=1024` unless
-`GENERIC_OPEN_AI_MAX_TOKENS` is set
-(`/app/server/utils/AiProviders/genericOpenAi/index.js:41` and the agent
-provider beside it). Fixed on spark2 in `host_vars/spark2.yml`:
+AnythingLLM's Generic OpenAI provider sends `max_tokens=1024` unless `GENERIC_OPEN_AI_MAX_TOKENS` is set (`/app/server/utils/AiProviders/genericOpenAi/index.js:41` and the agent provider beside it). Fixed on spark2 in `host_vars/spark2.yml`:
 
 ```yaml
 allm_extra_env:
@@ -1211,17 +956,11 @@ Raised to 81920 on 2026-11-07, see "vLLM 0.33.0 and an 81920 output cap".
 
 Only the AnythingLLM container restarts; vLLM is untouched.
 
-A thread that holds a failed turn, like the ones from the 16:09 crash, keeps an
-empty assistant message in its history. The model then spends its reasoning
-puzzling over the gap. Start a new thread rather than continuing one of those.
+A thread that holds a failed turn, like the ones from the 16:09 crash, keeps an empty assistant message in its history. The model then spends its reasoning puzzling over the gap. Start a new thread rather than continuing one of those.
 
 ### presence_penalty as a server default
 
-Qwen's card recommends `presence_penalty=1.5` in thinking mode to stop endless
-repetition, which matters more as the output cap rises. AnythingLLM sends only
-`temperature`, and vLLM's own defaults come from the model's
-`generation_config.json`, which doesn't set it. So it goes on the server, in
-`ms_extra_args`:
+Qwen's card recommends `presence_penalty=1.5` in thinking mode to stop endless repetition, which matters more as the output cap rises. AnythingLLM sends only `temperature`, and vLLM's own defaults come from the model's `generation_config.json`, which doesn't set it. So it goes on the server, in `ms_extra_args`:
 
 ```yaml
 - "'--override-generation-config={\"presence_penalty\":1.5}'"
@@ -1229,19 +968,14 @@ repetition, which matters more as the output cap rises. AnythingLLM sends only
 
 A client that sends its own `presence_penalty` still wins. This restarts vLLM.
 
-On the pinned v0.28.0 the flag is accepted but has no effect. vLLM merges the
-override into the generation config, then copies only six keys into the
-default sampling parameters (`vllm/config/model.py`, `get_diff_sampling_param`):
-`repetition_penalty`, `temperature`, `top_k`, `top_p`, `min_p`,
-`max_new_tokens`. The startup line that reports the defaults is the check:
+On the pinned v0.28.0 the flag is accepted but has no effect. vLLM merges the override into the generation config, then copies only six keys into the default sampling parameters (`vllm/config/model.py`, `get_diff_sampling_param`): `repetition_penalty`, `temperature`, `top_k`, `top_p`, `min_p`, `max_new_tokens`. The startup line that reports the defaults is the check:
 
 ```bash
 ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
 # v0.28.0: {'temperature': 1.0, 'top_k': 20, 'top_p': 0.95}   <- no presence_penalty
 ```
 
-v0.33.0 adds `presence_penalty` and `frequency_penalty` to that list, so the
-flag starts working once `ms_image` moves past 0.28.
+v0.33.0 adds `presence_penalty` and `frequency_penalty` to that list, so the flag starts working once `ms_image` moves past 0.28.
 
 ### vLLM 0.33.0 and an 81920 output cap
 
@@ -1256,17 +990,9 @@ cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs
 | `ms_image` | `vllm/vllm-openai:v0.28.0` | `vllm/vllm-openai:v0.33.0` |
 | `allm_extra_env.GENERIC_OPEN_AI_MAX_TOKENS` | 16384 | 81920 |
 
-The upgrade is what makes `presence_penalty` work. 81920 is Qwen's output
-length for "highly complex problems". Prompt plus output must fit in the
-262144-token window or vLLM answers 400 (tested: 229376 accepted, 262130
-rejected), so this leaves 180k for the prompt against AnythingLLM's 32768
-prompt budget.
+The upgrade is what makes `presence_penalty` work. 81920 is Qwen's output length for "highly complex problems". Prompt plus output must fit in the 262144-token window or vLLM answers 400 (tested: 229376 accepted, 262130 rejected), so this leaves 180k for the prompt against AnythingLLM's 32768 prompt budget.
 
-Before the switch, every flag in the unit was checked against
-`vllm serve --help=all` in the new image, plus the `marlin` MoE backend,
-the `qwen3_xml` tool parser, and the `qwen3` reasoning parser (registered in
-`vllm/reasoning/__init__.py` rather than listed in help). `v0.33.0` and
-`:latest` were the same image (`d825baf9ce4b`) on the day.
+Before the switch, every flag in the unit was checked against `vllm serve --help=all` in the new image, plus the `marlin` MoE backend, the `qwen3_xml` tool parser, and the `qwen3` reasoning parser (registered in `vllm/reasoning/__init__.py` rather than listed in help). `v0.33.0` and `:latest` were the same image (`d825baf9ce4b`) on the day.
 
 Verify:
 
@@ -1283,37 +1009,25 @@ ansible spark2 -b -m shell -a 'docker exec anythingllm sh -c "echo \$GENERIC_OPE
 | Startup | 3 min 28 s | ~2 min 10 s |
 | Weight load | 18.7 s | 6.9 s |
 
-*Table 20.2. Same harness as table 20.1, presence_penalty 1.5. Three runs of
-78.9 each; an explicit presence_penalty 0 gave the same 79.0, so the penalty
-costs no decode speed.*
+*Table 20.2. Same harness as table 20.1, presence_penalty 1.5. Three runs of 78.9 each; an explicit presence_penalty 0 gave the same 79.0, so the penalty costs no decode speed.*
 
-The first benchmark after the restart read 58.3 tok/s. That wasn't
-the new version: AnythingLLM was generating at the same time (`Running: 2 reqs`
-in the engine log) and the two streams split the decode. Check for concurrent
-traffic before trusting a single-stream number:
+The first benchmark after the restart read 58.3 tok/s. That wasn't the new version: AnythingLLM was generating at the same time (`Running: 2 reqs` in the engine log) and the two streams split the decode. Check for concurrent traffic before trusting a single-stream number:
 
 ```bash
 ansible spark2 -b -m shell -a "journalctl -u vllm --since '-15min' -o cat | grep -E 'Running: [2-9] reqs'"
 ```
 
-The same log gives a first look at concurrency: two streams together ran at
-103-119 tok/s, against 79 for one.
+The same log gives a first look at concurrency: two streams together ran at 103-119 tok/s, against 79 for one.
 
-Roll back by setting `ms_image` to `v0.28.0`, still on disk. The penalty goes
-inert again with it.
+Roll back by setting `ms_image` to `v0.28.0`, still on disk. The penalty goes inert again with it.
 
-The first attempt left out the outer single quotes and took spark2 down for
-14 minutes, 17:20 to 17:34. systemd unquotes ExecStart words, double quotes included
-even in the middle of a word, so vLLM received `{presence_penalty:1.5}`,
-exited on the parse error, and systemd restarted it 19 times while the
-playbook sat in its 15-minute health wait:
+The first attempt left out the outer single quotes and took spark2 down for 14 minutes, 17:20 to 17:34. systemd unquotes ExecStart words, double quotes included even in the middle of a word, so vLLM received `{presence_penalty:1.5}`, exited on the parse error, and systemd restarted it 19 times while the playbook sat in its 15-minute health wait:
 
 ```
 vllm serve: error: argument --override-generation-config: Value {presence_penalty:1.5} cannot be converted to <function loads ...>
 ```
 
-Before redeploying, the quoting was checked with a throwaway unit rather than
-by trial on vLLM:
+Before redeploying, the quoting was checked with a throwaway unit rather than by trial on vLLM:
 
 ```bash
 ansible spark2 -b -m shell -a "printf '%s\n' '[Service]' 'Type=oneshot' 'ExecStart=/bin/echo ARG '\"'\"'--override-generation-config={\"presence_penalty\":1.5}'\"'\"'' > /run/systemd/system/quote-test.service && systemctl daemon-reload && systemctl start quote-test && journalctl -u quote-test -o cat | grep ARG | tail -1; rm -f /run/systemd/system/quote-test.service; systemctl daemon-reload"
@@ -1325,3 +1039,602 @@ cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs
 ```
 
 ---
+
+## 21. spark2 front end: AnythingLLM to Open WebUI `[spark2]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-openwebui-20261107.log
+```
+
+2026-11-07. spark2's browser front end changed from AnythingLLM to Open WebUI on the same port, so http://100.123.5.235:3001 still works. spark1 keeps AnythingLLM.
+
+| Piece | Change |
+|---|---|
+| `roles/openwebui/` | New role, same shape as `roles/anythingllm/` |
+| `site.yml` | Runs `openwebui` after `anythingllm`, so the old front end frees port 3001 first |
+| `host_vars/spark2.yml` | `allm_enabled: false`, `owui_enabled: true`, default model `qwen3.6-35b-a3b`, name `spark2` |
+| `.secrets/vllm-keys.yml` | New `openwebui` key, so the front end has its own credential |
+| vLLM on spark2 | `max_new_tokens: 81920` added to `--override-generation-config` |
+
+*Table 21.1. What the switch touched. vLLM restarted once, for the new key list and the output cap together.*
+
+### Why the output cap moved into vLLM
+
+AnythingLLM sent `max_tokens` itself (81920, from `GENERIC_OPEN_AI_MAX_TOKENS`). Open WebUI sends none unless an admin sets one in a model's parameters, and without a cap vLLM lets a reply run to whatever the 262144-token window leaves. vLLM 0.33's `get_diff_sampling_param` renames a `max_new_tokens` override to `max_tokens`, and the chat endpoint uses that default whenever a request omits it (`vllm/entrypoints/openai/chat_completion/serving.py:183`). The cap now covers every client, not just one front end.
+
+### Facts checked against the image, not just the docs
+
+The Open WebUI docs fetch left several points as summaries, so these were read from the v0.13.0 source on spark2:
+
+- `linux/arm64` image published for `v0.13.0`, 1.48 GB.
+- `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` are `;`-separated and fall back to the singular forms (`open_webui/config.py:325-337`).
+- Those two, `ENABLE_OLLAMA_API`, `ENABLE_SIGNUP` and `DEFAULT_MODELS` are in the persistent-config map (`config.py:2934-3214`): seeded from the environment on first launch, then owned by the database.
+- With no `WEBUI_SECRET_KEY`, `start.sh` writes one to `/app/backend/.webui_secret_key`, outside the `/app/backend/data` volume. The role therefore generates one into `/opt/openwebui/webui_secret_key` and passes it in, or every restart would log everyone out.
+- `/health` returns `{'status': True}` unauthenticated (`main.py:3057`).
+
+### Verify
+
+```bash
+curl -s http://100.123.5.235:3001/health                         # {"status":true}
+ansible spark2 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
+# {'presence_penalty': 1.5, 'temperature': 1.0, 'top_k': 20, 'top_p': 0.95, 'max_tokens': 81920}
+ansible spark2 -b -m shell -a "systemctl is-active anythingllm; systemctl --failed --no-legend | wc -l"
+# inactive / 0
+```
+
+The play itself confirms the hop the browser can't see: from inside the container it lists vLLM's models with the URL and key Open WebUI was given, and fails unless `qwen3.6-35b-a3b` is there.
+
+First run: ok=42, changed=11, failed=0. A second run changes nothing in the `openwebui` role; the only remaining `changed` is `model_server`'s image pull, which matches "Pulling from" even when the image is already current.
+
+### Two teardown fixes found on the way
+
+Turning AnythingLLM off on spark2 was the first real use of the role's teardown path, and it exposed two things, fixed in both front-end roles:
+
+- systemd kept listing `anythingllm` under `systemctl --failed` after the unit file was gone, because stopping the container exits non-zero. Teardown now runs `systemctl reset-failed`.
+- The container-removal task reported `changed` on every run, because `docker rm -f` exits 0 even when there is nothing to remove. It now keys off the output, which names the container only when one was removed.
+
+### Things to know
+
+- The first account created at http://100.123.5.235:3001 becomes the admin. Later sign-ups are `pending` until approved.
+- Connection settings are seeded, not enforced. Rotating the `openwebui` key needs the admin UI (Settings, Connections) as well as `.secrets`, unless `owui_persistent_config: false` is set.
+- AnythingLLM's spark2 data (1.7 MB: accounts, the few threads from 2026-11-06) is still in `/opt/anythingllm`. Nothing was migrated; delete it by hand if it's not wanted.
+- spark1 hasn't been redeployed. Its next run will add the `openwebui` key to its key list and pull `vllm/vllm-openai:latest` (0.33.0 by now), since only spark2 pins an image.
+
+Roll back by flipping the two flags in `host_vars/spark2.yml` (`allm_enabled: true`, `owui_enabled: false`) and re-running. The AnythingLLM data is still in place. Put `GENERIC_OPEN_AI_MAX_TOKENS: 81920` back under `allm_extra_env` too: AnythingLLM sends `max_tokens=1024` when it's unset, and a value in the request beats vLLM's default.
+
+---
+
+## 22. spark1 takes over Qwen3.6 and Open WebUI `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-qwen36-20261108.log
+```
+
+2026-11-08. spark2 is due to be wiped, so spark1 now runs everything spark2 had built up in sections 20 and 21, and Qwen3.8-27B is retired.
+
+`host_vars/spark1.yml` was rebuilt from `host_vars/spark2.yml`. Two values differ, both on purpose:
+
+| Setting | spark1 | spark2 |
+|---|---|---|
+| `ms_weights_peer` | `spark2-ic` | unset |
+| `owui_name` | `spark1` | `spark2` |
+
+*Table 22.1. The only differences between the two host_vars files, checked by loading both as YAML and comparing every key.*
+
+Everything else carries over: the NVFP4 model, vLLM pinned at `v0.33.0`, GPU memory at 0.5, the recipe flags, prefix caching off, `presence_penalty` 1.5 and `max_new_tokens` 81920 as server defaults, and Open WebUI replacing AnythingLLM.
+
+The 22 GB of weights came from spark2 over the interconnect: the peer-sync task ran and the Hugging Face download was skipped. The task timestamps in `logs/ansible.log` can't give a transfer time, because Ansible's async polling skews them. Once spark2 is wiped the same setting falls back to a Hugging Face download on a rebuild, so it needs no change.
+
+### Verify
+
+```bash
+curl -s http://100.123.96.149:3001/health                     # {"status":true}
+ansible spark1 -b -m shell -a "journalctl -u vllm -o cat | grep 'sampling parameters have been overridden' | tail -1"
+# {'presence_penalty': 1.5, 'temperature': 1.0, 'top_k': 20, 'top_p': 0.95, 'max_tokens': 81920}
+ansible spark1 -b -m shell -a "journalctl -u vllm -o cat | grep -oE 'enable_prefix_caching=[A-Za-z]+' | tail -1"
+# enable_prefix_caching=False
+ansible spark1 -b -m shell -a "systemctl is-active anythingllm; systemctl --failed --no-legend | wc -l"
+# inactive / 0
+```
+
+| | spark1, Qwen3.8-27B FP8 (before) | spark1, Qwen3.6-35B-A3B NVFP4 |
+|---|---|---|
+| Decode, single stream | 8.4 tok/s | 80.3 tok/s |
+| Time to first token | 0.14 s | 0.07 s |
+| vLLM | 0.28.0 (`:latest`) | 0.33.0, pinned |
+| Front end | AnythingLLM | Open WebUI |
+
+*Table 22.2. Same harness as tables 20.1 and 20.2: three streamed runs of 512 tokens, thinking off, no other request in flight (checked for `Running: 2 reqs` in the engine log).*
+
+First run: ok=47, changed=12, failed=0.
+
+### Things to know
+
+- Clients that asked spark1 for `qwen3.8-27b` now get a 404 for that model name. spark1 had served nine requests under it since its previous restart.
+- The Qwen3.8-27B weights are still in `/opt/dgx-models` (29 GB), and the old host_vars is in git history, so going back is a revert and a restart with no download. Delete the cache by hand once that's no longer wanted.
+- spark1's AnythingLLM data, 1.2 MB and essentially the empty default database, is still in `/opt/anythingllm`.
+- The first account created at http://100.123.96.149:3001 becomes the admin of spark1's Open WebUI. It's a separate instance from spark2's, with its own accounts and chats.
+- The engine crash from section 20's known issue belongs to this model and configuration, so it moves to spark1 with them. `systemctl show vllm -p NRestarts` on spark1 counts it.
+
+---
+
+## 23. Bifrost gateway `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-bifrost-20261108.log
+cd ansible && ansible-playbook telemetry.yml --limit spark1 --diff 2>&1 | tee ../logs/telemetry-spark1-bifrost-20261108.log
+```
+
+2026-11-08. Bifrost (`maximhq/bifrost:v2.5.0`) on spark1 port 4000: one OpenAI-compatible endpoint in front of vLLM, a virtual key per client, and per-client token and latency metrics in Thanos. Chosen over LiteLLM, whose official images were trojaned on 2026-10-21 (v1.107.0) and which needs Postgres for keys and spend tracking.
+
+| Piece | Where |
+|---|---|
+| Role | `roles/bifrost/` (config.json, env file, unit, DOCKER-USER allowlist) |
+| Node settings | `host_vars/spark1.yml`: `bifrost_enabled`, `bifrost_vllm_model`, `tel_extra_scrape_jobs` |
+| Secrets | `.secrets/bifrost.yml` (admin, setup token, encryption key, virtual keys) and a `bifrost` entry in `.secrets/vllm-keys.yml` |
+| Playbook | `site.yml` runs the role after `openwebui` and loads `.secrets/bifrost.yml` |
+| Telemetry | scrape job `bifrost`; journald units now `openwebui` and `bifrost` instead of `anythingllm` |
+
+*Table 23.1. What the gateway added.*
+
+### Security posture
+
+Bifrost's critical RCE (GHSA-86gf-xh3g-rvxq, fixed in 2.1.0) was reachable because admin auth is off by default. Here:
+
+- Dashboard and management API need the admin login (401 without it).
+- Every inference request needs a virtual key (401 `virtual_key_required` without one, 401 `access_not_found` with a wrong one).
+- The port is open to loopback, the Docker bridges and the VPN overlay only; from the lab LAN it times out.
+- The encryption key is set from the first start. It can't be changed later without wiping the config store.
+- Prompt and response bodies aren't stored (`disable_content_logging`).
+
+### Problem found on the way: SSRF guard blocks the Docker gateway
+
+The first deploy came up healthy, but every request through it returned:
+
+```
+502 "connection to private IP 172.17.0.1 is not allowed"
+```
+
+Bifrost refuses provider connections to RFC 1918 addresses by default, and `host.docker.internal` resolves to the Docker gateway. The v2.5.0 schema (`transports/config.schema.json`, `$defs.network_config`) has `allow_private_network` for this, set on the vLLM provider only. Host networking would also work, since loopback is always allowed, but it would bypass the DOCKER-USER allowlist.
+
+### Problem found on the way: telemetry runs depended on GitHub
+
+`telemetry.yml` failed twice: a read timeout, then a truncated package ("E:read, still have 8 to read but none left"). GitHub's release download was returning 504. The role's `apt: deb: <url>` downloads the package before it compares versions, so even a config-only run needed GitHub. The role now checks the installed version first and skips the download when it already matches.
+
+### Verify
+
+Acceptance test from desktop2 over the VPN, 13 of 13:
+
+| Check | Result |
+|---|---|
+| `/health`, no auth | 200 |
+| `/metrics`, no auth | 200, 57+ `bifrost_` series |
+| Inference with no key / wrong key | 401 / 401 |
+| Inference with the virtual key at `/v1`, `/openai/v1`, `/openai` | 200 |
+| `/v1/models` with the virtual key | `vllm/qwen3.6-35b-a3b` |
+| Management API without / with admin auth | 401 / 200 |
+| 3,500-token non-streaming reply | 200 after 56 s, past any 30 s default |
+| Port from the lab LAN | timed out (firewall) |
+| Token metrics | labelled `virtual_key_name="desktop2-opencode"` |
+
+*Table 23.2. Only `/v1` passed `chat_template_kwargs` through to vLLM; the `/openai` routes didn't, so `/v1` is the documented base URL.*
+
+In Thanos afterwards: `up{job="bifrost"} = 1` and token counts by `virtual_key_name` and `model`. In Loki: `bifrost.service` and `openwebui.service` lines.
+
+A second `site.yml` run changed nothing in the role. Restarts were 0 for vLLM, Open WebUI and Bifrost, and DOCKER-USER held the five `bifrost-acl` rules.
+
+```bash
+curl -s http://100.123.96.149:4000/health
+ansible spark1 -b -m shell -a "iptables -S DOCKER-USER | grep -c bifrost-acl"   # 5
+```
+
+### Things to know
+
+- The client base URL is `http://100.123.96.149:4000/v1`, the model is `vllm/qwen3.6-35b-a3b`, and the key is that client's virtual key. See `ACCESS.md`, "Pointing a client at the gateway".
+- `bifrost_cost_total` isn't emitted for a self-hosted model, so attribution is in tokens, not dollars.
+- Adding the `bifrost` key restarted spark1's vLLM once.
+- spark2 isn't touched. Its telemetry config still lists `anythingllm` until `telemetry.yml` runs there, which is moot once it's wiped.
+
+### spark1 Open WebUI through Bifrost
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-owui-via-bifrost-20261108.log
+```
+
+spark1's Open WebUI now reaches vLLM through Bifrost rather than directly, so its chats are counted alongside every other client. It's all `host_vars` and secrets; the role didn't change:
+
+| Setting | Value |
+|---|---|
+| `owui_llm_base_url` | `http://host.docker.internal:4000/v1` |
+| `owui_llm_api_key` | virtual key `spark1-openwebui` (new, in `.secrets/bifrost.yml`) |
+| `owui_default_model` | `vllm/qwen3.6-35b-a3b`, Bifrost's id for the model |
+
+*Table 23.3. Open WebUI's connection, before: `host.docker.internal:8000/v1` with the `openwebui` vLLM key.*
+
+`site.yml` now runs `bifrost` straight after `model_server`, ahead of the front ends. Open WebUI's link check would otherwise run before Bifrost had loaded the new virtual key, and fail.
+
+Open WebUI's database was checked first: `openai.api_base_urls` and `ui.default_models` were unset there, so the environment applies and the change took effect without touching the admin UI. Its play confirmed the new link from inside the container (`vllm/qwen3.6-35b-a3b` listed through Bifrost).
+
+Correction, 2026-11-09: this was wrong, and chats did not go through Bifrost. The database had stored the direct vLLM URL at 09:00 UTC that morning, and the play's link check used the container's env rather than what Open WebUI actually reads. Section 24 has the fix.
+
+### opencode against the gateway
+
+Tested from desktop2 with opencode 2.2.6, using a throwaway project config and `--standalone` so the user's own opencode server and sessions weren't touched. The model listed as `bifrost/vllm/qwen3.6-35b-a3b`, a one-word request returned `pong`, and Bifrost logged it under `desktop2-opencode` with `app=OpenCode`. The client config is in `ACCESS.md`.
+
+---
+
+## 24. Open WebUI really through Bifrost, and per-request tags `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-owui-dbsync-userheaders-20261109.log
+```
+
+2026-11-09. Chats in spark1's Open WebUI showed up in Grafana but never in Bifrost's logs, while opencode's showed up in both. The Grafana numbers were vLLM's own metrics, which count every request whatever its route. Open WebUI was still talking to vLLM directly.
+
+### Cause
+
+With `ENABLE_PERSISTENT_CONFIG=True`, Open WebUI v0.13 stores one row per setting in the `config` table of `webui.db` (columns `key`, `value`, `updated_at`) and reads from there after the first launch. Every row on spark1 had `updated_at` 2026-11-08 09:00:25 UTC, from the deploy that moved Open WebUI to spark1, before the switch to Bifrost at 09:51. So the database held:
+
+| Key | Stored value | Env value |
+|---|---|---|
+| `openai.api_base_urls` | `["http://host.docker.internal:8000/v1"]` | `http://host.docker.internal:4000/v1` |
+| `openai.api_keys` | the `openwebui` vLLM key | the `spark1-openwebui` virtual key |
+| `ui.default_models` | `"qwen3.6-35b-a3b"` | `vllm/qwen3.6-35b-a3b` |
+
+*Table 24.1. Open WebUI's database against its environment, before the fix.*
+
+The env was right, which is why the play's link check passed: it read `OPENAI_API_*` from the env, not from the database. Bifrost's container log had 28 `POST /v1/chat/completions` in the 38 hours before the fix, all from opencode.
+
+### Fix
+
+The `openwebui` role now runs `files/sync_connection.py` inside the container after every start. It copies the env's URLs, keys and default model into those three rows and restarts Open WebUI if anything changed. It prints only `updated <keys>` or `in sync`, never values. Other admin settings still belong to the database.
+
+### Per-request tags
+
+Bifrost stores any `x-bf-lh-<name>` request header in the log entry's metadata as `<name>`, with no gateway config. It doesn't log the client IP, but it does log the User-Agent.
+
+| Client | Change | Metadata |
+|---|---|---|
+| Open WebUI | `owui_extra_env` in `host_vars/spark1.yml`: `ENABLE_FORWARD_USER_INFO_HEADERS=True`, with the user name, id, role and chat-id headers renamed to `x-bf-lh-owui-*` | `owui-user`, `owui-user-id`, `owui-role`, `owui-chat-id` |
+| opencode (desktop2) | `"headers": { "x-bf-lh-client-host": "desktop2" }` under `providers.bifrost` in `~/.config/opencode/opencode.jsonc` | `client-host` |
+
+*Table 24.2. Who tags what. The email header keeps its default name, which Bifrost doesn't record.*
+
+The header names come from `/app/backend/open_webui/env.py` in the v0.13.0 image (`FORWARD_USER_INFO_HEADER_USER_NAME` and friends, `FORWARD_SESSION_INFO_HEADER_CHAT_ID`). opencode 2.2.6 takes a provider-level `headers` object.
+
+### Verify
+
+- The play: `failed=0`. The sync and the restart after it both reported `changed`, and `Report` gave backend `http://host.docker.internal:4000/v1` serving `vllm/qwen3.6-35b-a3b`. A second run (`ansible-playbook site.yml --limit spark1`) reported the sync `ok`, with no restart.
+- The database now holds the Bifrost URL, a `sk-bf-` key and `vllm/qwen3.6-35b-a3b`.
+- A test request from inside the Open WebUI container with the virtual key and two `x-bf-lh-` headers came back `pong`. It was logged under `spark1-openwebui` with metadata `{"owui-chat-id": "test-chat", "owui-user": "lh-test"}`. That test entry stays in Bifrost's log.
+- `opencode run --standalone` from a throwaway config with the header returned `pong`. It was logged under `desktop2-opencode`, `app=OpenCode`, with metadata `{"client-host": "desktop2-test"}`.
+
+### Things to know
+
+- Chats started before the fix name the model `qwen3.6-35b-a3b`. Through Bifrost it is `vllm/qwen3.6-35b-a3b`, so continuing an old chat may need the model picked again.
+- The real opencode config was edited in place. The background server reads it only at start, so `opencode service restart` is needed before its requests carry `client-host`.
+- The `model_server` image pull reported `changed` on this run, but the `v0.33.0` image ID didn't change and vLLM wasn't restarted (up 38h after the run).
+
+### opencode's own headers
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-bifrost-logging-headers-20261109.log
+```
+
+Bifrost logs every opencode request with the same User-Agent, `opencode/latest/2.2.6/cli`, whether it came from the terminal or the desktop app. Both talk to one background server, and the server sends the model requests. To see what else opencode sends, `opencode run --standalone` was pointed at a local stub server on `127.0.0.1:18999` that printed the request headers. Besides the User-Agent and key it sent `x-opencode-client: cli`, a session id under four names (`x-opencode-session`, `x-opencode-session-id`, `x-session-id`, `x-session-affinity`), `x-opencode-project`, and the trace headers `traceparent` and `b3`.
+
+The `bifrost` role gained `bifrost_logging_headers` (default `[]`), rendered into `client.logging_headers` in `config.json`. spark1 lists all eight headers. The trace headers are there so logs can be joined to OTel traces later. The config change restarted Bifrost, and `GET /api/config` then showed all eight under `client_config.logging_headers`.
+
+A terminal request (`opencode run --standalone`, global config) was logged under `desktop2-opencode` with metadata `x-opencode-client: cli`, the session id under all four names, the project hash, both trace ids and `client-host: desktop2`.
+
+The desktop app doesn't help either. A prompt from it (2026-11-10 00:14 UTC, after `opencode service restart`) was logged with `x-opencode-client: cli`, the same as the terminal. The background server sets the header itself, so in opencode 2.2.6 nothing in a request says which front end it came from. Only the session id differs, and only per session.
+
+Open WebUI chats from the browser now log too, under `spark1-openwebui` with user agent `Python/3.12 aiohttp/3.14.5` and metadata `owui-user`, `owui-user-id`, `owui-role` and `owui-chat-id`. Title and tag generation requests carry no `owui-chat-id`.
+
+## 25. Repo audit fixes `[spark1, spark2, obs-read]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-audit-fixes-20261110.log
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-audit-fixes-20261110.log
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-allowlist-cleanup-20261110.log
+cd ansible && ansible-playbook site.yml --limit spark2 --diff 2>&1 | tee ../logs/site-spark2-allowlist-cleanup-20261110.log
+cd ansible && ansible-playbook observability.yml --limit obs-read --diff 2>&1 | tee ../logs/observability-obs-read-drop-memcached-20261110.log
+cd ansible && ansible-playbook netbird-access.yml --check 2>&1 | tee ../logs/netbird-access-check-20261110.log
+```
+
+2026-11-10. Eight findings from a review of the whole repo, all fixed in the same pass. The first was live and confirmed before the fix: the lab LAN could reach vLLM and Bifrost.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | vLLM (8000) and Bifrost (4000) answered on IPv6 link-local from the lab LAN, past the IPv4-only allowlist | Both publish on `0.0.0.0` only |
+| 2 | Nothing checked the allowlist after a run | `port_allowlist` verify step: no IPv6 listener, exactly one rule set |
+| 3 | `host_key_checking = False` | `True`; every host is in `.ssh/known_hosts` |
+| 4 | `netbird_config` only created, never updated | Policies, routes and setup-key groups are rewritten when they drift |
+| 5 | memcached on obs-read, used by nothing, open on `0.0.0.0:11211` | Removed |
+| 6 | `bin/vllm-watch` read `vllm:gpu_cache_usage_perc`, gone since vLLM's rename | Reads `vllm:kv_cache_usage_perc` |
+| 7 | The image pull reported `changed` every run; `ms_image` defaulted to `:latest` | Changed only on a real download; empty or `:latest` fails the play |
+| 8 | Two copies of the allowlist script and unit | One role, `roles/port_allowlist`, used by `model_server` and `bifrost` |
+
+*Table 25.1. Findings and fixes. Details of each are in `ansible/README.md` (Source allowlist, Layout) and `CLOUD_ARCHITECTURE.md`.*
+
+### The IPv6 path
+
+From desktop2 on the lab LAN (`eno2`, 10.255.128.0/20), before the fix:
+
+| Request | Result |
+|---|---|
+| `http://10.255.129.236:4000/health` (IPv4) | timeout, dropped by `bifrost-acl` |
+| `http://[fe80::d9ff:4a0f:1c1:fc55%eno2]:8000/health` | `200` |
+| `http://[fe80::d9ff:4a0f:1c1:fc55%eno2]:4000/health` | `200` |
+
+*Table 25.2. spark1 from the lab LAN. `ss -ltn` showed docker-proxy on both `0.0.0.0` and `[::]` for 8000, 4000 and 3001.*
+
+docker-proxy accepted the IPv6 connection and opened its own IPv4 connection to the container from `172.17.0.1`, which is inside the allowed `172.16.0.0/12`. After the fix both requests time out, `ss` shows only `0.0.0.0:8000` and `0.0.0.0:4000`, and the VPN path (`http://100.123.96.149:8000/health`) still returns `200`. Open WebUI's 3001 still listens on `[::]` too; it has no allowlist and is meant to be reachable.
+
+### Problem found on the way: the allowlist never removed old rules
+
+The first run of the new verify step showed 24 tagged rules on spark1 and 14 on spark2, where 5 and 7 were expected. The cleanup step grepped for `--comment "vllm-acl"`, but `iptables-save` prints the comment unquoted when it has no spaces (`--comment vllm-acl`), so nothing was ever deleted and each reapply added another full set. A CIDR removed from the list would have kept its `RETURN` rule. The grep now matches both forms, and the verify step fails unless the count is exactly the CIDR count plus two. The rerun brought both nodes to one set.
+
+### Verify
+
+- spark1 and spark2: `failed=0`, both verify steps pass. A second spark1 run reported `changed=0`.
+- spark1 vLLM restarted once, for the unit's `--publish` change, and Bifrost restarted once; the image ID stayed `d825baf9ce4b` (`v0.33.0`).
+- obs-read: memcached is gone, nothing listens on 11211, Grafana's `/api/health` returns `database: ok`.
+- NetBird: `--check` reported `changed=0` against the live server. With `teammates-to-grafana` given an extra port as a test override, the policy task selected it for a `PUT`, so drift is detected. The playbook wasn't run for real; in this session the permission check blocked it, and with no drift it would have changed nothing.
+- `vllm-watch`: the new pattern turns a sample `kv_cache_usage_perc 0.253` line into `kv=25.3%`. The nodes were idle, so the live view showed 0.0%.
+
+### Things to know
+
+- After rebuilding a node, its host key must be replaced in `.ssh/known_hosts` by hand, or every play against it fails (see `ansible/README.md`, Layout).
+- A node's `host_vars` must now set `ms_image` to a pinned tag.
+- `netbird_config` warns about policies enabled in NetBird but missing from the list, and leaves them alone.
+
+## 26. HTTPS for Bifrost and Gmail through MCP `[spark1]`
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-mcp-scaffold-20261110.log
+```
+
+2026-11-10. Goal: Gmail tools in opencode and Open WebUI, each person on their own Google account, every call through Bifrost, and clients on HTTPS. The design is in `ansible/README.md` (HTTPS for Bifrost; Gmail through Bifrost).
+
+### Done
+
+- Roles `tls_proxy` and `workspace_mcp`, the Bifrost settings they need (`bifrost_external_url`, `bifrost_docker_network`, `bifrost_mcp_clients`, `bifrost_vk_mcp_grants`), and `terraform/bifrost.tf`.
+- A personal virtual key `vk-sudobasher` in `.secrets/bifrost.yml`, live in Bifrost. The run above restarted Bifrost once (new key, empty `mcp` section) and finished `failed=0`.
+- `ghcr.io/taylorwilsdon/google_workspace_mcp:2.4.0` pulled on spark1 (arm64). Asked from inside the image, read-only Gmail mode requires `gmail.readonly`, `userinfo.email`, `userinfo.profile` and `openid`.
+- HTTPS and Gmail are switched on in `host_vars/spark1.yml` by the presence of their secrets, so a run without them leaves both off.
+
+### Steps that need a person
+
+1. **Terraform** (needs a fresh MFA session for `isc-eng-hpcresearch-dev`, which `bin/aws-mfa-session` renews for 36 hours):
+
+   ```bash
+   bin/aws-mfa-session
+   cd terraform && tofu plan && tofu apply
+   ```
+
+   Adds the `bifrost` A record and the `dgx-cluster-bifrost-acme` IAM user.
+
+2. **Route53 key for certbot**, created outside Terraform so the secret never reaches state:
+
+   ```bash
+   aws iam create-access-key --profile isc-eng-hpcresearch-dev \
+       --user-name dgx-cluster-bifrost-acme --output json \
+     | python3 -c 'import json,sys; k=json.load(sys.stdin)["AccessKey"]; print(f"acme_aws_access_key_id: \"{k[\"AccessKeyId\"]}\"\nacme_aws_secret_access_key: \"{k[\"SecretAccessKey\"]}\"")' \
+     >> .secrets/acme-route53.yml
+   ```
+
+   Then delete the two empty placeholder lines above them in that file.
+
+3. **Google OAuth client** in Google Cloud Console:
+   - Enable the Gmail API.
+   - Google Auth Platform: audience External, publishing status In production. The app is unverified, so the login shows a warning to click through.
+   - Data access: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`, `.../auth/gmail.readonly`.
+   - Clients, Web application, authorized redirect URI `https://bifrost.isc-spectro-sbx.click/api/oauth/callback`.
+   - Client id and secret into `.secrets/google-oauth.yml`.
+
+4. Rerun `site.yml --limit spark1`. Then verify the Gmail connection once in Bifrost's dashboard (MCP Gateway, `gmail_personal`, Verify). That's a one-time Google login Bifrost uses only to read the tool list.
+
+### HTTPS, done
+
+```bash
+bin/aws-mfa-session
+cd terraform && tofu apply -target=aws_route53_record.bifrost -target=aws_iam_user.bifrost_acme -target=aws_iam_user_policy.bifrost_acme 2>&1 | tee ../logs/tofu-apply-bifrost-20261110.log
+aws iam create-access-key --profile isc-eng-hpcresearch-dev --user-name dgx-cluster-bifrost-acme   # into .secrets/acme-route53.yml, not printed
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-tls-proxy-20261110-retry2.log
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-owui-https-20261110.log
+```
+
+`tofu apply` was **targeted on purpose**. The full plan also wanted to replace netbird-cp, obs-read and obs-write, because the Ubuntu AMI lookup now finds a newer image (`ami-065a2acd39a66257a` to `ami-0bec25ae844865e7d`, which forces replacement). That has nothing to do with this change and would rebuild the VPN control plane and both observability nodes. The instances have ignored AMI changes since section 27, so a plain apply no longer does this.
+
+Two role fixes on the way:
+
+- `ansible_managed` is defined only inside templates, so `copy` content that used it failed with "'ansible_managed' is undefined". It's now the literal text, as the other roles write it.
+- Ubuntu 24.04's nginx is 1.24, which rejects `http2 on;` (added in 1.25.1). The site uses `listen 443 ssl http2;` instead.
+
+| Check | Result |
+|---|---|
+| `https://bifrost.isc-spectro-sbx.click/health` from desktop2 over the VPN | `200`, certificate verified |
+| The same name pinned to spark1's lab-LAN address | `403` from nginx |
+| spark1's IPv6 link-local address on 443 | no connection |
+| `certbot renew --dry-run` with the renewal credentials | succeeded, so the IAM policy covers renewal |
+| Certificate | valid until 2027-02-08; `certbot.timer` renews it |
+| Open WebUI container to `https://bifrost.isc-spectro-sbx.click/v1/models` | `200`, `vllm/qwen3.6-35b-a3b` |
+
+*Table 26.1. The HTTPS path.*
+
+Model traffic moved to HTTPS the same day:
+
+- Open WebUI: `owui_llm_base_url` in `host_vars/spark1.yml`, which the connection sync wrote to its database.
+- opencode on desktop2: `providers.bifrost.settings.baseURL` in `~/.config/opencode/opencode.jsonc`. `opencode run --standalone` answered `pong` through it. The background server picks it up after `opencode service restart`.
+
+### Gmail MCP deployed
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1 --diff 2>&1 | tee ../logs/site-spark1-gmail-mcp-20261110-retry.log
+```
+
+The Google OAuth client went into `.secrets/google-oauth.yml`: an External app in production, unverified, with the four scopes above and the Bifrost callback as its only redirect URI. Google asked for a home page and privacy policy before it would publish. `https://bifrost.isc-spectro-sbx.click` and `.../privacy` were entered, with `isc-spectro-sbx.click` as an authorized domain. Google checks those only when an app is submitted for verification.
+
+The first run failed. The server crash-looped on `[Errno 30] Read-only file system: '/home/app/.local'`, because FastMCP writes a key-value store there even in stateless mode. The container stays read-only, with an in-memory `--tmpfs /home/app/.local` owned by the image's `app` user (uid 1000).
+
+| Check | Result |
+|---|---|
+| `GET /api/mcp/clients` | `gmail_personal`, `per_user_oauth`, state `pending_verification`, granted to `vk-sudobasher` only |
+| Bifrost container to `http://workspace-mcp:8000/mcp` | `405` to a GET, so the server is reachable on the `mcp` network |
+| `tools/list` on `https://bifrost.isc-spectro-sbx.click/mcp` with `vk-sudobasher` | `{"tools":[]}`, with the key in `x-bf-vk` or `Authorization: Bearer` |
+| The same with no key | `401`, "virtual key required to access mcp server" |
+
+*Table 26.2. Before verification. The tool list stays empty until the admin Verify step.*
+
+opencode on desktop2 got an `mcp.servers.bifrost` entry in `~/.config/opencode/opencode.jsonc` (see `ACCESS.md`), effective after `opencode service restart`.
+
+On startup Bifrost syncs a public MCP catalog from `https://getbifrost.ai/mcp-library` (126 entries), its only outbound call besides vLLM and the MCP servers. It sends nothing from this install.
+
+### Verified, and opencode uses Gmail
+
+Bifrost v2.5.0's dashboard has no Verify button where the docs put it, so the admin step went through the API: `POST /api/mcp/client/<id>/initiate-verification` returned a Google `authorize_url`. Its parameters were the Bifrost callback, the four scopes, `access_type=offline`, `prompt=consent` and PKCE S256. After approving it in a browser, opencode in the terminal and the desktop app both searched Gmail through `vk-sudobasher`.
+
+### Known issue: vLLM engine crash, 2026-11-11 01:56 UTC
+
+Open WebUI showed `dial tcp 172.17.0.1:8000: connect: connection refused`. That's Bifrost failing to reach vLLM, which was restarting. The engine had died with `RuntimeError: CUDA error: CUBLAS_STATUS_INTERNAL_ERROR when calling cublasGemmEx(...)` in the MoE router's bf16 GEMM (`gate_linear.py`). That ended in `EngineDeadError`, and systemd restarted the container. It served again at 01:58:10, about 1.5 minutes later.
+
+| Evidence | Value |
+|---|---|
+| `MemAvailable` on spark1, 01:54–01:56 | 49.4 GiB, steady, so not out of memory |
+| Kernel log | no Xid, no OOM kill |
+| `num_requests_running` / KV cache use | 0–1, ~0%, so not load |
+| Request in flight | an Open WebUI non-streaming request, started 01:55:48, failed at 01:56:26 after 38 s |
+
+*Table 26.3. The crash. Content logging is off, so the request's input isn't known.*
+
+The cause is not known. It isn't memory, load or the network, and it isn't the same as section 20's prefix-cache crash (prefix caching is off). If it happens again, compare the in-flight request's size and type first. A request from inside the Open WebUI container after the restart returned `Pong!`.
+
+### Still to do
+
+- Open WebUI: an MCP connection that gives each user their own identity (OAuth 2.1 against Bifrost).
+- ~~Drop the VPN range from Bifrost's port-4000 allowlist.~~ Done in section 27, by publishing the port on loopback instead.
+
+## 27. Second audit fixes `[workstation, spark1, spark2]`
+
+A second `/ponytail-audit` on 2026-11-11 found five things. All five are fixed.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | A plain `tofu apply` would replace netbird-cp, obs-read and obs-write, because the AMI lookup follows Canonical's newest image | `lifecycle { ignore_changes = [ami] }` on all three `aws_instance` resources |
+| 2 | Open WebUI's port 3001 was open to the lab LAN, and over IPv6 | `openwebui-firewall` from `roles/port_allowlist` on container port 8080; published on `0.0.0.0` only |
+| 3 | Bifrost still answered plain HTTP on port 4000 over the VPN | Published on `127.0.0.1` (`bifrost_publish_address`) |
+| 4 | `workspace_mcp` defaults said teardown removes the Docker network | Comment corrected: unit and container only |
+| 5 | `model_server` teardown reported `changed` on every run | `changed_when` keyed on `docker rm -f` output, as in the other roles |
+
+*Table 27.1. Findings and fixes.*
+
+```bash
+cd ansible && ansible-playbook site.yml --limit spark1,spark2 --diff > ../logs/site-sparks-audit2-fixes-20261111.log 2>&1
+cd ansible && ansible-playbook site.yml --limit spark1 --diff > ../logs/site-spark1-bifrost-loopback-20261111.log 2>&1
+bin/aws-mfa-session
+cd terraform && tofu plan | tee ../logs/tofu-plan-ami-ignore-20261111.log
+```
+
+### Why the Bifrost fix moved from the allowlist to loopback
+
+The first attempt removed `100.64.0.0/10` from Bifrost's allowlist. The rule set changed, but port 4000 still answered from desktop2 over the VPN. The reason is NetBird's FORWARD rules on spark1:
+
+```
+-A FORWARD -o wt0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A FORWARD -i wt0 -j ACCEPT
+-A FORWARD -j DOCKER-USER
+```
+
+Anything arriving on `wt0` is accepted before Docker's `DOCKER-USER` chain is reached, so the allowlists can only ever block the Ethernet networks. NetBird's own policies control VPN access. Publishing on `127.0.0.1` keeps the port off every network. nginx (`proxy_pass http://127.0.0.1:4000`) and the telemetry scraper were its only callers.
+
+| Check | Result |
+|---|---|
+| `http://spark-a01a.tommyslab:3001` and `spark-9d80.tommyslab:3001` from desktop2 (LAN) | no connection |
+| `http://100.123.96.149:3001` and `100.123.5.235:3001` over the VPN | `200` |
+| `ss` on spark1, port 3001 | `0.0.0.0:3001` only, no `[::]` |
+| `DOCKER-USER` | one `openwebui-acl` set (3 CIDRs + 2) |
+| `http://100.123.96.149:4000/health` over the VPN | no connection |
+| `https://bifrost.isc-spectro-sbx.click/health` | `200` |
+| `http://127.0.0.1:4000/metrics` on spark1 | `200`, so the scrape still works |
+| `tools/list` on `/mcp` with `vk-sudobasher` after Bifrost's restart | 3 Gmail tools |
+| Open WebUI container to Bifrost `/v1/models` | `200`, `vllm/qwen3.6-35b-a3b` |
+
+*Table 27.2. After the run.*
+
+`tofu plan` after `bin/aws-mfa-session` shows no resource changes, so the three instances are no longer replaced. The only diff is two stale outputs in state, `netbird_b_fqdn` and `netbird_b_public_ip`, left over from the removed relay-b. Any later apply drops them without touching real infrastructure.
+
+## 28. NetBird key for tommy's iPhone `[workstation]`
+
+The phone is a separate peer from desktop2, so both stay connected at once. It uses a one-off key in the `admins` group, the same pattern as section 17's per-person keys, rather than the shared `admin-device` key. That shared key expired on 2026-10-02 in any case.
+
+```yaml
+# roles/netbird_config/defaults/main.yml
+- { name: tommy-iphone, groups: [admins], usage_limit: 1 }
+```
+
+```bash
+cd ansible && ansible-playbook netbird-access.yml > ../logs/netbird-access-tommy-iphone-20261111.log 2>&1
+```
+
+The role prints a new key once. It went into `.secrets/netbird-keys.yml` as `tommy_iphone_vpn_key` and was then redacted from the log. Checked through the API: `tommy-iphone`, one-off, valid, group `admins`, expires 2026-12-12.
+
+The play recap showed `changed=0` even though the key was created, because `uri` POSTs report `ok` by default. Check the API, not the recap.
+
+On the phone: NetBird app, Settings, Change Server, `https://vpn.isc-spectro-sbx.click:443`, "Add this device with a setup key", paste the key, Change, Connect. Once the phone is connected, delete the key line from `.secrets/netbird-keys.yml`; the key itself is spent.
+
+## 29. HTTPS for Open WebUI, and names on the VPN `[workstation, spark1]`
+
+Open WebUI on spark1 is now `https://openwebui.isc-spectro-sbx.click`, built the same way as Bifrost's name (section 26). Port 3001 listens on loopback only, so plain `http://spark1:3001` no longer answers.
+
+### Names on the VPN: already there
+
+No work needed. NetBird's built-in DNS answers for every peer on `wt0`, with `netbird.selfhosted` as a search domain:
+
+```bash
+resolvectl query spark1      # 100.123.96.149 (spark1.netbird.selfhosted), link wt0
+curl -s http://spark1.netbird.selfhosted:3001/health   # 200, before 3001 went to loopback
+```
+
+Those names can't get a Let's Encrypt certificate, so anything that needs HTTPS gets a public Route53 record pointing at its VPN address instead.
+
+### Changes
+
+| Piece | Change |
+|---|---|
+| `terraform/bifrost.tf` | `aws_route53_record.openwebui` (A, `100.123.96.149`); the ACME user's policy now also allows `_acme-challenge.openwebui.isc-spectro-sbx.click` |
+| `roles/tls_proxy` | `tlsp_fqdn`/`tlsp_upstream` replaced by a `tlsp_sites` list: one certificate and one nginx server block per site |
+| `roles/tls_proxy` verify | `curl` without `-f`, so a not-yet-running upstream (Open WebUI deploys after this role) is reported rather than failed; TLS errors still fail |
+| `roles/openwebui` | `owui_publish_address`, `127.0.0.1` on spark1 once HTTPS is up |
+| `host_vars/spark1.yml` | Both sites in `tlsp_sites`; `bifrost_external_url` from `_bifrost_fqdn` |
+
+*Table 29.1. What changed.*
+
+```bash
+cd terraform && tofu plan -out=../logs/openwebui-dns.tfplan && tofu apply ../logs/openwebui-dns.tfplan
+cd ansible && ansible-playbook site.yml --limit spark1 --diff > ../logs/site-spark1-openwebui-https-20261111.log 2>&1
+```
+
+The first apply created the record but failed on the IAM user's tag: IAM tag values can't contain a comma (`Member must satisfy regular expression pattern: [\p{L}\p{Z}\p{N}_.:/=+\-@]*`). With the comma replaced by "and", the second apply updated the tag and the policy.
+
+| Check | Result |
+|---|---|
+| `https://openwebui.isc-spectro-sbx.click/health` over the VPN | `200`; certificate valid until 2027-02-10 |
+| `https://bifrost.isc-spectro-sbx.click/health` | `200`, unchanged |
+| Same name pinned to spark1's lab-LAN address | `403` from nginx |
+| `http://spark1:3001` and `http://100.123.96.149:3001` | no connection |
+| WebSocket upgrade on `/ws/socket.io/` through nginx | `101 Switching Protocols` |
+| socket.io polling without a session, direct and through nginx | `400` both, so nginx adds nothing |
+| `certbot renew --dry-run` for the new name, with the renewal credentials | succeeded, so the widened IAM policy covers it |
+
+*Table 29.2. After the run.*
+
+To dry-run renewal by hand, give certbot the credentials the timer gets from its drop-in, and skip the random delay it adds when there's no terminal (up to ~8 minutes):
+
+```bash
+sudo AWS_SHARED_CREDENTIALS_FILE=/etc/letsencrypt/aws-route53-credentials \
+  certbot renew --dry-run --no-random-sleep-on-renew --cert-name openwebui.isc-spectro-sbx.click
+```
+
+Without the variable it fails with `NoCredentialsError: Unable to locate credentials`; that's the manual run, not the timer.
+

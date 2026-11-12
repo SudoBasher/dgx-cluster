@@ -52,7 +52,12 @@ ms_extra_args:
   - --max-num-batched-tokens 8192
   - --enable-chunked-prefill
   - --async-scheduling
-  - --enable-prefix-caching
+  # Prefix caching OFF since 2026-11-08, explicitly rather than by omission so
+  # no default can turn it back on. The recipe calls it experimental for this
+  # hybrid (GDN linear attention + attention) model, and the 2026-11-08 engine
+  # crash was a prefix-cache hit (RUNBOOK.md section 20, known issue). Costs a
+  # re-prefill of shared prompts, ~1 s per 6k tokens.
+  - --no-enable-prefix-caching
   - --load-format fastsafetensors
   # Qwen's thinking-mode recommendation, applied as a server default because
   # AnythingLLM sends only temperature. Curbs the endless repetition a long
@@ -63,34 +68,33 @@ ms_extra_args:
   # repetition_penalty, temperature, top_k, top_p, min_p and max_new_tokens
   # out of the merged config and dropped presence_penalty without a warning.
   #
+  # max_new_tokens is the output cap for any request that doesn't send
+  # max_tokens; vLLM renames it to max_tokens. Open WebUI sends none by
+  # default, so without this a reply could run to the full 262144-token
+  # window. 81920 is Qwen's figure for "highly complex problems".
+  #
   # The outer single quotes are for systemd, which unquotes ExecStart words
   # and would otherwise strip the JSON's double quotes even mid-word, leaving
   # vLLM {presence_penalty:1.5} and a crash loop (2026-11-06, 19 restarts).
-  - "'--override-generation-config={\"presence_penalty\":1.5}'"
+  - "'--override-generation-config={\"presence_penalty\":1.5,\"max_new_tokens\":81920}'"
 
 ## Weights
 # No ms_weights_peer: spark1 does not hold this model, so the role downloads
 # it from Hugging Face (~20 GB). The Qwen3.8-27B cache stays on disk, which
 # makes rolling back a host_vars revert and no download.
 
-## AnythingLLM
-# Front end on port 3001, same role as spark1's. Reaches vLLM on this host via
-# host.docker.internal and authenticates with the "anythingllm" entry from
-# .secrets/vllm-keys.yml, which the role picks up on its own.
-allm_enabled: true
-allm_llm_model: qwen3.6-35b-a3b
+## Front end: Open WebUI
+# Replaced AnythingLLM on 2026-11-07. allm_enabled: false makes the
+# anythingllm role tear down its unit and container; its data stays in
+# /opt/anythingllm. Open WebUI takes over port 3001, so the URL is unchanged.
+allm_enabled: false
 
-# Output cap per reply. AnythingLLM's Generic OpenAI provider defaults to 1024
-# when this is unset, on both the chat and agent paths. Qwen reasons before it
-# answers, so 1024 is spent on thinking and the reply is cut off mid-sentence
-# with no answer at all.
-#
-# 81920 is Qwen's figure for "highly complex problems". Prompt plus output must
-# fit in ms_max_model_len (262144) or vLLM returns 400, so this leaves 180k for
-# the prompt against AnythingLLM's 32768 allm_llm_token_limit. Worst case ~18
-# min at 77 tok/s; presence_penalty is what keeps a long reply from looping.
-allm_extra_env:
-  GENERIC_OPEN_AI_MAX_TOKENS: 81920
+# Authenticates to vLLM with the "openwebui" entry from .secrets/vllm-keys.yml,
+# which the role picks up on its own. The first account created in the UI
+# becomes the admin.
+owui_enabled: true
+owui_default_model: qwen3.6-35b-a3b
+owui_name: spark2
 
 ## VPN
 nbc_setup_key: "{{ nbc_key_spark }}"   # spark-node -> sparks

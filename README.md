@@ -1,7 +1,6 @@
 # dgx-cluster
 
-Building stuff on a local DGX cluster: two DGX Sparks (`spark-a01a`,
-`spark-9d80`) joined by a 200GbE ConnectX-7 link.
+Building stuff on a local DGX cluster: two DGX Sparks (`spark-a01a`, `spark-9d80`) joined by a 200GbE ConnectX-7 link.
 
 | Document | Contents |
 |---|---|
@@ -31,9 +30,9 @@ ssh -F .ssh/config spark2
 | Interconnect latency | 1.66 µs |
 | NCCL all-reduce | 3.0 GB/s, limited by the absence of GPUDirect RDMA |
 | Combined memory | 242 GiB unified across the pair |
-| Serving | spark1: Qwen3.8-27B FP8, 8.4 tok/s. spark2: Qwen3.6-35B-A3B NVFP4 (MoE), 79 tok/s |
+| Serving | Qwen3.6-35B-A3B NVFP4 (MoE) on spark1, 79 tok/s; spark2 the same until it is wiped |
+| Gateway | Bifrost on spark1 at `https://bifrost.isc-spectro-sbx.click`, one OpenAI-compatible endpoint with per-client virtual keys and token metrics |
 | Observability | Thanos + Loki + Grafana in us-west-2, 18 scrape targets up, 12-month retention |
 | Access | NetBird VPN, all peer links direct P2P; nothing public except the VPN control plane |
 
-The NCCL figure is the binding constraint for multi-node inference. See
-`FINDINGS.md`.
+The NCCL figure is the binding constraint for multi-node inference. See `FINDINGS.md`.

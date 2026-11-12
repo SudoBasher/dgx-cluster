@@ -13,7 +13,6 @@ obs_dir: /opt/observability
 obs_thanos_image: quay.io/thanos/thanos:v0.42.4
 obs_loki_image: grafana/loki:3.6.16
 obs_grafana_image: grafana/grafana:13.0.8
-obs_memcached_image: memcached:1.6.45-alpine
 
 # Overlay addresses. Set from the NetBird API by the play.
 obs_write_ip: ""

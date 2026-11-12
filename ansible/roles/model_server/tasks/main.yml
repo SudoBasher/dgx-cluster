@@ -24,6 +24,19 @@
       ms_enabled=false to leave this node free.
   when: ms_enabled
 
+# A floating tag would be pulled by every run but only take effect at the
+# next unplanned restart, so the node could upgrade at a random moment. A
+# pinned tag changes the unit file, which restarts vLLM on purpose.
+- name: Fail early on an unpinned serving image
+  ansible.builtin.assert:
+    that:
+      - ms_image is search(':[^/]+$')
+      - not (ms_image is search(':latest$'))
+    fail_msg: >-
+      ms_image is "{{ ms_image }}". Pin it to a release tag in
+      host_vars/{{ inventory_hostname }}.yml, e.g. vllm/vllm-openai:v0.33.0.
+  when: ms_enabled
+
 # ---------------------------------------------------------------- disabled --
 # Tear down cleanly so the node is genuinely free for another workload.
 
@@ -38,11 +51,13 @@
         enabled: false
       failed_when: false
 
+    # docker rm -f exits 0 either way and prints the name only when it removed
+    # a container, so key changed off the output.
     - name: Remove any lingering container
       ansible.builtin.command:
         cmd: docker rm -f {{ ms_container_name }}
       register: _ms_rm
-      changed_when: _ms_rm.rc == 0
+      changed_when: _ms_rm.stdout | length > 0
       failed_when: false
 
     - name: Remove the unit file
@@ -87,9 +102,9 @@
       ansible.builtin.command:
         cmd: docker pull {{ ms_image }}
       register: _ms_pull
-      changed_when: >-
-        'Downloaded newer image' in _ms_pull.stdout
-        or 'Pulling from' in _ms_pull.stdout
+      # Only a real download. "Pulling from" is printed on every pull, even
+      # when the image is already current.
+      changed_when: "'Downloaded newer image' in _ms_pull.stdout"
       # A 10+ GB multi-arch pull on first run.
       async: 3600
       poll: 15
@@ -223,45 +238,18 @@
         group: "{{ ansible_user }}"
         recurse: true
 
+    # Source-network allowlist on the container port, enabled to reapply at
+    # boot as well as run here. Shared with bifrost; see roles/port_allowlist.
     - name: Source-network allowlist
-      become: true
-      block:
-        - name: Install the allowlist script
-          ansible.builtin.template:
-            src: vllm-firewall.sh.j2
-            dest: /usr/local/sbin/vllm-firewall
-            owner: root
-            group: root
-            mode: "0750"
-          register: _ms_fw_script
-
-        - name: Install the allowlist unit
-          ansible.builtin.template:
-            src: vllm-firewall.service.j2
-            dest: /etc/systemd/system/vllm-firewall.service
-            owner: root
-            group: root
-            mode: "0644"
-          register: _ms_fw_unit
-          notify: reload systemd
-
-        - name: Apply unit changes now
-          ansible.builtin.meta: flush_handlers
-
-        # Docker rebuilds its chains on restart, so this is enabled to reapply
-        # at boot as well as being run here.
-        # Reapply only when the rules actually changed; the unit is oneshot
-        # with RemainAfterExit, so an unconditional restart would report
-        # changed on every run.
-        - name: Enable and apply the allowlist
-          ansible.builtin.systemd:
-            name: vllm-firewall
-            enabled: true
-            state: >-
-              {{ 'restarted'
-                 if (_ms_fw_script.changed or _ms_fw_unit.changed)
-                 else 'started' }}
-            daemon_reload: true
+      ansible.builtin.include_role:
+        name: port_allowlist
+      vars:
+        pa_name: vllm-firewall
+        pa_tag: vllm-acl
+        pa_before_unit: "{{ ms_service_name }}.service"
+        pa_container_port: 8000
+        pa_restrict: "{{ ms_restrict_network }}"
+        pa_allowed_cidrs: "{{ ms_allowed_cidrs }}"
 
     - name: Install the systemd unit
       become: true
@@ -294,6 +282,16 @@
       retries: "{{ (ms_health_timeout | int / 10) | int }}"
       delay: 10
       when: ms_wait_for_health
+
+    - name: Confirm the allowlist can't be bypassed over IPv6
+      ansible.builtin.include_role:
+        name: port_allowlist
+        tasks_from: verify
+      vars:
+        pa_host_port: "{{ ms_port }}"
+        pa_tag: vllm-acl
+        pa_allowed_cidrs: "{{ ms_allowed_cidrs }}"
+      when: ms_wait_for_health and ms_restrict_network
 
     # /v1 is guarded once ms_api_keys is set, so this must authenticate. Uses
     # the "claude" key: automation gets its own credential like every client.

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Renew the MFA session that Terraform's AWS profile depends on.
+#
+#   bin/aws-mfa-session            prompts for the 6-digit MFA code
+#   bin/aws-mfa-session 123456     takes the code as an argument
+#
+# How the profiles fit together (~/.aws/config and ~/.aws/credentials):
+#
+#   default                       long-term keys for the IAM user (never changed here)
+#      │  sts get-session-token + MFA code
+#      ▼
+#   isc-eng-hpcresearch-dev-mfa   36-hour session keys, written by this script
+#      │  sts assume-role (done by the AWS CLI on demand)
+#      ▼
+#   isc-eng-hpcresearch-dev       the role Terraform uses (terraform/versions.tf)
+#
+# Prints no secrets. Ends by showing the role it can now assume.
+set -euo pipefail
+
+## Settings
+SOURCE_PROFILE="default"
+MFA_PROFILE="isc-eng-hpcresearch-dev-mfa"
+ROLE_PROFILE="isc-eng-hpcresearch-dev"
+MFA_DEVICE="arn:aws:iam::920175927690:mfa/tommy.aldo.sonin"
+DURATION_SECONDS=129600   # 36 hours, the most AWS allows for an IAM user
+
+## MFA code: from the argument, or ask for it
+code="${1:-}"
+if [ -z "$code" ]; then
+  read -r -p "MFA code: " code
+fi
+
+## Ask AWS for session keys
+# Three tab-separated fields: access key id, secret key, session token.
+creds="$(aws sts get-session-token \
+  --profile "$SOURCE_PROFILE" \
+  --serial-number "$MFA_DEVICE" \
+  --token-code "$code" \
+  --duration-seconds "$DURATION_SECONDS" \
+  --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken,Expiration]' \
+  --output text)"
+read -r key_id secret token expires <<< "$creds"
+
+## Store them in the MFA profile
+aws configure set aws_access_key_id     "$key_id" --profile "$MFA_PROFILE"
+aws configure set aws_secret_access_key "$secret" --profile "$MFA_PROFILE"
+aws configure set aws_session_token     "$token"  --profile "$MFA_PROFILE"
+
+## Prove the role works
+echo "Session stored in profile $MFA_PROFILE, valid until $expires (UTC)."
+echo -n "Profile $ROLE_PROFILE now acts as: "
+aws sts get-caller-identity --profile "$ROLE_PROFILE" --query Arn --output text

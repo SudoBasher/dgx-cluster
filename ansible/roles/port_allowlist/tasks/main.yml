@@ -1,0 +1,32 @@
+---
+## Install the allowlist script and its unit, then apply it
+# Reapplied only when the script or unit changed: the unit is a oneshot with
+# RemainAfterExit, so an unconditional restart would report changed every run.
+
+- name: Install the {{ pa_name }} script
+  become: true
+  ansible.builtin.template:
+    src: allowlist.sh.j2
+    dest: /usr/local/sbin/{{ pa_name }}
+    owner: root
+    group: root
+    mode: "0750"
+  register: _pa_script
+
+- name: Install the {{ pa_name }} unit
+  become: true
+  ansible.builtin.template:
+    src: allowlist.service.j2
+    dest: /etc/systemd/system/{{ pa_name }}.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: _pa_unit
+
+- name: Enable and apply {{ pa_name }}
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ pa_name }}"
+    enabled: true
+    daemon_reload: "{{ _pa_unit.changed }}"
+    state: "{{ 'restarted' if (_pa_script.changed or _pa_unit.changed) else 'started' }}"

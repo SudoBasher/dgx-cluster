@@ -1,26 +1,18 @@
 # Monitoring
 
-Every command here has been run against the live nodes. Tooling is installed by
-`RUNBOOK.md` section 8; if something reports "command not found", that section
-has not been replayed on that node.
+Every command here has been run against the live nodes. Tooling is installed by `RUNBOOK.md` section 8; if something reports "command not found", that section has not been replayed on that node.
 
-Two layers. **Grafana** is the day-to-day interface, holding 12 months of
-history. The CLI tools below are for the live view and for when Grafana itself
-is the thing that is broken.
+Two layers. **Grafana** is the day-to-day interface, holding 12 months of history. The CLI tools below are for the live view and for when Grafana itself is the thing that is broken.
 
-All addresses are NetBird overlay addresses and require the VPN. See
-`ACCESS.md`.
+All addresses are NetBird overlay addresses and require the VPN. See `ACCESS.md`.
 
 ## Grafana
 
 <http://100.123.229.83:3000>
 
-Metrics come from Thanos, logs from Loki, both provisioned as datasources with
-fixed uids (`thanos`, `loki`).
+Metrics come from Thanos, logs from Loki, both provisioned as datasources with fixed uids (`thanos`, `loki`).
 
-Three dashboards ship with the deployment. They are provisioned from
-`ansible/roles/observability/files/dashboards/`, so a playbook run restores
-them and also overwrites any browser edits.
+Three dashboards ship with the deployment. They are provisioned from `ansible/roles/observability/files/dashboards/`, so a playbook run restores them and also overwrites any browser edits.
 
 | Dashboard | What it answers |
 |---|---|
@@ -28,45 +20,32 @@ them and also overwrites any browser edits.
 | **Fleet health** | Are the nodes healthy. CPU, unified memory, root filesystem, GPU utilisation and thermals, 200GbE interconnect throughput, and SSH authentication events (a Security row covering both Sparks and the NetBird control plane) |
 | **Observability stack health** | Is the telemetry pipeline itself healthy. Samples accepted/s, remote-write queue depth, dropped telemetry, compactor iterations and memory, query p95 |
 
-Start at **Observability stack health** when a dashboard looks wrong. A flat
-line is far more often a dropped scrape or a stalled remote-write queue than
-an actual change on the node.
+Start at **Observability stack health** when a dashboard looks wrong. A flat line is far more often a dropped scrape or a stalled remote-write queue than an actual change on the node.
 
 **Logs.** Explore, pick Loki, then filter by systemd unit:
 
 ```logql
 {service_name="vllm.service"}
-{service_name="anythingllm.service"} |= "error"
+{service_name="openwebui.service"} |= "ERROR"       # shipped since 2026-11-08 (spark1)
+{service_name="bifrost.service"}                    # gateway, spark1
 {node="spark1"} | json | priority <= 3
 {service_name="ssh.service"} |= "Accepted"          # successful logins, any host
 {service_name="ssh.service"} |= "Failed"            # rejected attempts, any host
 {service_name="netbird-server"}                     # NetBird's own auth/peer activity
 ```
 
-Two different things called "auth" here, kept as separate services rather than
-merged:
+Two different things called "auth" here, kept as separate services rather than merged:
 
 - `ssh.service` is host login — who got a shell on a Spark or on netbird-cp.
-- `netbird-server` is the VPN's own management service — peer connections,
-  relay activity, and the JWT/Dex authentication behind the dashboard and API.
+- `netbird-server` is the VPN's own management service — peer connections, relay activity, and the JWT/Dex authentication behind the dashboard and API.
 
-Both live on the Fleet health dashboard's Security row as three panels, not
-two: SSH on the Sparks, SSH on netbird-cp, and VPN auth from netbird-server
-itself. `netbird-dashboard` and `netbird-traefik` are also visible as their
-own services in Explore if the underlying HTTP traffic is ever worth
-inspecting, though nothing is provisioned against them yet.
+Both live on the Fleet health dashboard's Security row as three panels, not two: SSH on the Sparks, SSH on netbird-cp, and VPN auth from netbird-server itself. `netbird-dashboard` and `netbird-traefik` are also visible as their own services in Explore if the underlying HTTP traffic is ever worth inspecting, though nothing is provisioned against them yet.
 
 Kernel messages carry no unit and land under `unknown_service`.
 
-Streams carry three labels: `service_name`, `node` and `host_name`. Only
-`service_name` existed until 2026-09-04 — Loki's OTLP endpoint promotes a fixed
-default set of resource attributes and `node` was not among them, so
-`{node="spark1"}` silently matched nothing. Logs written before that date still
-have no `node` label.
+Streams carry three labels: `service_name`, `node` and `host_name`. Only `service_name` existed until 2026-09-04 — Loki's OTLP endpoint promotes a fixed default set of resource attributes and `node` was not among them, so `{node="spark1"}` silently matched nothing. Logs written before that date still have no `node` label.
 
-**Who is calling the model servers.** vLLM logs every request with its source
-address, and NetBird overlay addresses are stable per peer, so an address
-identifies a machine:
+**Who is calling the model servers.** vLLM logs every request with its source address, and NetBird overlay addresses are stable per peer, so an address identifies a machine:
 
 ```logql
 sum by (ip) (count_over_time(
@@ -75,9 +54,7 @@ sum by (ip) (count_over_time(
   | path =~ "/v1/.*|/invocations" [1h]))
 ```
 
-Filter to `| status = "401"` to see rejected callers. The **Clients** row of the
-vLLM dashboard runs exactly this. Exclude `/metrics` or the collector's own
-scrapes dominate the count by three orders of magnitude.
+Filter to `| status = "401"` to see rejected callers. The **Clients** row of the vLLM dashboard runs exactly this. Exclude `/metrics` or the collector's own scrapes dominate the count by three orders of magnitude.
 
 **Metrics.** Explore, pick Thanos. Useful starting points:
 
@@ -90,9 +67,7 @@ node_memory_MemAvailable_bytes / 1024^3           # unified pool headroom
 rate(node_ethtool_transmitted_bytes_phy{device="enp1s0f0np0"}[1m])*8   # interconnect bits/s
 ```
 
-Retention is tiered automatically: raw 1s for 30 days, 5-minute rollups for 12
-months, 1-hour for 3 years. Thanos picks the resolution per query, so a
-year-long dashboard stays fast.
+Retention is tiered automatically: raw 1s for 30 days, 5-minute rollups for 12 months, 1-hour for 3 years. Thanos picks the resolution per query, so a year-long dashboard stays fast.
 
 ## Node labels
 
@@ -104,8 +79,7 @@ Three labels identify a host, and only one works everywhere.
 | `host_name` | `spark-a01a` | every job |
 | `Hostname` | `spark-a01a` | DCGM only |
 
-Filter on `host_name` or `node`. Filtering on `Hostname` silently matches DCGM
-alone, which looks like the other exporters are not shipping when they are.
+Filter on `host_name` or `node`. Filtering on `Hostname` silently matches DCGM alone, which looks like the other exporters are not shipping when they are.
 
 Host metrics, all `node_exporter`:
 
@@ -118,14 +92,11 @@ rate(node_disk_read_bytes_total{host_name="spark-a01a"}[1m])
 node_load1{host_name="spark-a01a"}
 ```
 
-`node_memory_*` is the only meaningful memory view on GB10. CPU and GPU share
-one 121 GiB pool, so DCGM reports nothing useful for GPU memory and stock
-NVIDIA dashboards show empty VRAM panels.
+`node_memory_*` is the only meaningful memory view on GB10. CPU and GPU share one 121 GiB pool, so DCGM reports nothing useful for GPU memory and stock NVIDIA dashboards show empty VRAM panels.
 
 ## Setup
 
-Two aliases, one for pipeable streams and one for interactive tools that need a
-TTY. Put both in your shell rc.
+Two aliases, one for pipeable streams and one for interactive tools that need a TTY. Put both in your shell rc.
 
 ```bash
 export DGX="ssh    -F /home/user/storage/development/github/sudobasher/dgx-cluster/.ssh/config"
@@ -135,16 +106,14 @@ export DGXT="ssh -t -F /home/user/storage/development/github/sudobasher/dgx-clus
 
 ## Web dashboards
 
-Each node runs NVIDIA DGX Dashboard (`dgx-dashboard.service`) on
-127.0.0.1:11000, bound to loopback and unreachable without a tunnel.
+Each node runs NVIDIA DGX Dashboard (`dgx-dashboard.service`) on 127.0.0.1:11000, bound to loopback and unreachable without a tunnel.
 
 ```bash
 ssh -F .ssh/config -f -N -o ExitOnForwardFailure=yes -L 11001:127.0.0.1:11000 spark1-vpn
 ssh -F .ssh/config -f -N -o ExitOnForwardFailure=yes -L 11002:127.0.0.1:11000 spark2-vpn
 ```
 
-The `-vpn` aliases go over the overlay, so these work from anywhere and do not
-depend on the workstation's lab interface being up.
+The `-vpn` aliases go over the overlay, so these work from anywhere and do not depend on the workstation's lab interface being up.
 
 | Node | URL |
 |---|---|
@@ -159,8 +128,7 @@ pgrep -af 'L 1100[12]:127.0.0.1:11000'
 kill $(pgrep -f 'L 1100[12]:127.0.0.1:11000')
 ```
 
-There is also a `dgx-dashboard-admin.service`, but it exposes no TCP port. Port
-11000 is the only listener besides sshd and cups.
+There is also a `dgx-dashboard-admin.service`, but it exposes no TCP port. Port 11000 is the only listener besides sshd and cups.
 
 ## Interactive tools
 
@@ -182,8 +150,7 @@ One node:
 $DGX spark1 'nvidia-smi dmon -s pucvmet -d 1'
 ```
 
-Selector letters are power, utilisation, clocks, violations, memory, encoder,
-temperature. Add `-o T` for wall-clock timestamps.
+Selector letters are power, utilisation, clocks, violations, memory, encoder, temperature. Add `-o T` for wall-clock timestamps.
 
 Both nodes interleaved in one window, `Ctrl-C` stops both:
 
@@ -199,9 +166,7 @@ Full `nvidia-smi`, refreshing natively without a TTY:
 $DGX spark1 'nvidia-smi -l 1'
 ```
 
-Thermals and throttling. `v` is the violation selector, which is where throttle
-events appear. `-s pt` gives power and temperature plus PCIe rates, not
-violations. `mtemp` reads `-` on GB10, which has no separate memory sensor.
+Thermals and throttling. `v` is the violation selector, which is where throttle events appear. `-s pt` gives power and temperature plus PCIe rates, not violations. `mtemp` reads `-` on GB10, which has no separate memory sensor.
 
 ```bash
 $DGX spark1 'nvidia-smi dmon -s pvt -d 1'
@@ -209,9 +174,7 @@ $DGX spark1 'nvidia-smi dmon -s pvt -d 1'
 
 ## Memory
 
-GB10 has no discrete VRAM. CPU and GPU share one 121 GiB pool, so `nvidia-smi`
-reports `-` for `fb` and `bar1` and `nvtop` shows `MEM: N/A`. GPU-side memory
-readings are not useful. Watch system memory instead.
+GB10 has no discrete VRAM. CPU and GPU share one 121 GiB pool, so `nvidia-smi` reports `-` for `fb` and `bar1` and `nvtop` shows `MEM: N/A`. GPU-side memory readings are not useful. Watch system memory instead.
 
 ```bash
 $DGX spark1 'while :; do free -h | awk "/Mem:/{printf \"%s  used %-6s avail %-6s\n\", strftime(\"%T\"), \$3, \$7}"; sleep 1; done'
@@ -227,8 +190,7 @@ Both nodes:
 
 ## Interconnect
 
-PHY counters report actual bytes on the wire. Both devices share one cable, so
-either one gives total link utilisation.
+PHY counters report actual bytes on the wire. Both devices share one cable, so either one gives total link utilisation.
 
 ```bash
 $DGX spark1 'p=0; q=0; while :; do
@@ -257,10 +219,7 @@ bin/vllm-watch spark1       # one node
 bin/vllm-watch spark1 5     # one node, 5s refresh
 ```
 
-Shows load progress while a node is starting and switches to throughput, queue
-depth and KV cache usage once it is serving. Detects whether stdout is a
-terminal: it repaints in place on a TTY and appends plain lines in a pipe, so
-`bin/vllm-watch >> watch.log` works during a long run.
+Shows load progress while a node is starting and switches to throughput, queue depth and KV cache usage once it is serving. Detects whether stdout is a terminal: it repaints in place on a TTY and appends plain lines in a pipe, so `bin/vllm-watch >> watch.log` works during a long run.
 
 ### Raw service log
 
@@ -281,8 +240,7 @@ Both nodes interleaved:
 
 ### Startup stages
 
-A cold start passes through four stages, roughly seven minutes in total on the
-first run and less afterwards now that the compile cache persists:
+A cold start passes through four stages, roughly seven minutes in total on the first run and less afterwards now that the compile cache persists:
 
 | Stage | Log signature |
 |---|---|
@@ -327,37 +285,53 @@ $DGX spark1 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/heal
 $DGX spark1 'curl -s http://127.0.0.1:8000/v1/models'
 ```
 
-`/v1/models` reports the served name and `max_model_len`, which is the quickest
-way to confirm a config change actually took effect.
+`/v1/models` reports the served name and `max_model_len`, which is the quickest way to confirm a config change actually took effect.
 
 ### Per-request timing
 
-vLLM logs a throughput line per request at INFO. To watch requests as they
-arrive:
+vLLM logs a throughput line per request at INFO. To watch requests as they arrive:
 
 ```bash
 $DGX spark1 'sudo journalctl -u vllm -f -o cat | grep --line-buffered -E "Avg prompt throughput|Avg generation throughput|Added request"'
 ```
 
-### AnythingLLM
+### Open WebUI
 
 ```bash
-$DGX spark1 'sudo journalctl -u anythingllm -f'     # or spark2
-$DGX spark1 'curl -s http://127.0.0.1:3001/api/ping'
+$DGX spark1 'sudo journalctl -u openwebui -f'
+$DGX spark1 'curl -s http://127.0.0.1:3001/health'   # {"status":true}
 ```
+
+Open WebUI's journal only reaches Loki since 2026-11-08. Until then `group_vars/sparks.yml` still listed `anythingllm` in `tel_journal_units`, so the query above returned nothing for the first day Open WebUI ran.
+
+### Bifrost gateway
+
+```bash
+$DGX spark1 'sudo journalctl -u bifrost -f'
+$DGX spark1 'curl -s http://127.0.0.1:4000/health'   # {"components":{"db_pings":"ok"},"status":"ok"}
+```
+
+Scraped as job `bifrost` every 5 s. Per-client usage, in Thanos or Grafana:
+
+```promql
+sum by (virtual_key_name, model) (increase(bifrost_input_tokens_total[1h]))
+sum by (virtual_key_name, model) (increase(bifrost_output_tokens_total[1h]))
+histogram_quantile(0.95, sum by (le, virtual_key_name) (rate(bifrost_upstream_latency_seconds_bucket[5m])))
+sum by (virtual_key_name, status_code) (rate(bifrost_error_requests_total[5m]))
+```
+
+`bifrost_cost_total` isn't emitted at all for this model (no series), since Bifrost has no price for a self-hosted vLLM model. Its own dashboard at https://bifrost.isc-spectro-sbx.click (admin login in `.secrets/bifrost.yml`) shows the same counts per request, without prompt or response bodies, which are deliberately not stored.
 
 ## Fabric health
 
-`rocep1s0f0` must read `PORT_ACTIVE`. `rocep1s0f1` and `roceP2p1s0f1` are
-permanently `PORT_DOWN` because those cages are empty, which is expected.
+`rocep1s0f0` must read `PORT_ACTIVE`. `rocep1s0f1` and `roceP2p1s0f1` are permanently `PORT_DOWN` because those cages are empty, which is expected.
 
 ```bash
 $DGX spark1 'ibv_devinfo -d rocep1s0f0 | grep -E "state|link_layer"'
 $DGX spark1 'ibv_devinfo | grep -E "hca_id|state:"'
 ```
 
-Do not judge this fabric with `ping`. ICMP goes through the kernel stack and
-reads about 1.25 ms; RDMA, which is what NCCL uses, is 1.66 µs.
+Do not judge this fabric with `ping`. ICMP goes through the kernel stack and reads about 1.25 ms; RDMA, which is what NCCL uses, is 1.66 µs.
 
 Latency:
 
@@ -373,13 +347,11 @@ $DGX spark2 'ib_write_bw -d rocep1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576'
 $DGX spark1 'ib_write_bw -d rocep1s0f0 -x 3 -F --report_gbits -q 2 -s 1048576 192.168.100.2'
 ```
 
-`-x 3` is the RoCEv2-over-IPv4 GID index; confirm with
-`show_gids | grep rocep1s0f0`.
+`-x 3` is the RoCEv2-over-IPv4 GID index; confirm with `show_gids | grep rocep1s0f0`.
 
 ## Combined and non-interactive
 
-One line per tick, covering time, CPU, memory, network, disk and IO. This and
-`glances --stdout` are the two worth piping to a log during a long run.
+One line per tick, covering time, CPU, memory, network, disk and IO. This and `glances --stdout` are the two worth piping to a log during a long run.
 
 ```bash
 $DGX spark1 'dstat -tcmndr 2'
@@ -393,8 +365,7 @@ Disk. Watch `%util` and `w_await` when loading a large model from NVMe.
 $DGX spark1 'iostat -xm 2 | grep -E "^Device|^nvme"'
 ```
 
-Containers. Models will run in containers, and `docker stats` shows which one is
-consuming the unified pool.
+Containers. Models will run in containers, and `docker stats` shows which one is consuming the unified pool.
 
 ```bash
 $DGX spark1 'docker stats'
@@ -421,26 +392,14 @@ done
 
 ## Known traps
 
-`pkill -f` matches the command line you just typed and kills your own shell.
-`pkill -f ib_write_bw` and `pkill -f 'L 11001:...'` both did this during setup.
-Use `pkill -x <exact-name>`, or `kill` a PID from `pgrep`.
+`pkill -f` matches the command line you just typed and kills your own shell. `pkill -f ib_write_bw` and `pkill -f 'L 11001:...'` both did this during setup. Use `pkill -x <exact-name>`, or `kill` a PID from `pgrep`.
 
 GPU memory readings are meaningless on GB10; use `free -h`.
 
 `ping` latency is roughly 750× the real fabric latency; use `ib_send_lat`.
 
-A stale apt index looks like a missing package. See `RUNBOOK.md` section 8
-before concluding a package does not exist.
+A stale apt index looks like a missing package. See `RUNBOOK.md` section 8 before concluding a package does not exist.
 
-**Empty vLLM latency panels usually mean no traffic, not a broken dashboard.**
-`histogram_quantile` over a rate window containing zero requests returns `NaN`,
-which Grafana renders as "No data". The cluster serves a handful of requests a
-day, so a 5-minute window is empty almost all the time. The dashboard has a
-**Rate window** control at the top for this; widen it to 1h or 24h. The panels
-also say "No requests in this window" rather than a bare "No data".
+**Empty vLLM latency panels usually mean no traffic, not a broken dashboard.** `histogram_quantile` over a rate window containing zero requests returns `NaN`, which Grafana renders as "No data". The cluster serves a handful of requests a day, so a 5-minute window is empty almost all the time. The dashboard has a **Rate window** control at the top for this; widen it to 1h or 24h. The panels also say "No requests in this window" rather than a bare "No data".
 
-**Percentiles from a handful of samples are not trustworthy.** With six
-requests in the window, p95 and p99 land in whichever coarse histogram bucket
-holds the tail, and Grafana interpolates inside it — a p99 of 1,881 s appeared
-from requests that all completed in under 30 s. p50 is meaningful at low sample
-counts; the upper percentiles are not until the request rate is much higher.
+**Percentiles from a handful of samples are not trustworthy.** With six requests in the window, p95 and p99 land in whichever coarse histogram bucket holds the tail, and Grafana interpolates inside it — a p99 of 1,881 s appeared from requests that all completed in under 30 s. p50 is meaningful at low sample counts; the upper percentiles are not until the request rate is much higher.

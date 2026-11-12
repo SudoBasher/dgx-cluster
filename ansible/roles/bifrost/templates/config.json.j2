@@ -1,0 +1,66 @@
+{%- set vks = [] -%}
+{%- for vk in bifrost_virtual_keys | default([]) -%}
+{%-   set _ = vks.append({
+        'id': vk.id,
+        'name': vk.name,
+        'value': 'env.BIFROST_VK_' ~ (vk.id | upper | regex_replace('[^A-Z0-9]', '_') | regex_replace('^VK_', '')),
+        'is_active': true,
+        'provider_configs': [{
+          'provider': 'vllm',
+          'allowed_models': [bifrost_vllm_model],
+          'key_ids': ['*'],
+          'weight': 1
+        }],
+        'mcp_configs': bifrost_vk_mcp_grants[vk.id] | default([])
+                       | selectattr('mcp_client_name', 'in', bifrost_mcp_clients | map(attribute='name') | list)
+                       | list
+      }) -%}
+{%- endfor -%}
+{%- set client = {
+      'enforce_auth_on_inference': true,
+      'disable_content_logging': bifrost_disable_content_logging
+    } -%}
+{%- if bifrost_logging_headers | length > 0 -%}
+{%-   set _ = client.update({'logging_headers': bifrost_logging_headers}) -%}
+{%- endif -%}
+{%- if bifrost_external_url | length > 0 -%}
+{%-   set _ = client.update({'mcp_external_client_url': bifrost_external_url}) -%}
+{%- endif -%}
+{%- if bifrost_mcp_clients | length > 0 -%}
+{%-   set _ = client.update({'mcp_enable_temp_token_auth': bifrost_mcp_temp_token_auth}) -%}
+{%- endif -%}
+{%- if bifrost_metrics_unauthenticated -%}
+{%-   set _ = client.update({'whitelisted_routes': ['/metrics']}) -%}
+{%- endif -%}
+{{ {
+  'encryption_key': 'env.BIFROST_ENCRYPTION_KEY',
+  'client': client,
+  'mcp': {'client_configs': bifrost_mcp_clients},
+  'governance': {
+    'auth_config': {
+      'is_enabled': true,
+      'admin_username': 'env.BIFROST_ADMIN_USERNAME',
+      'admin_password': 'env.BIFROST_ADMIN_PASSWORD',
+      'disable_auth_on_inference': false
+    },
+    'virtual_keys': vks
+  },
+  'providers': {
+    'vllm': {
+      'network_config': {
+        'default_request_timeout_in_seconds': bifrost_vllm_timeout_seconds,
+        'allow_private_network': bifrost_vllm_allow_private_network
+      },
+      'keys': [{
+        'name': inventory_hostname ~ '-vllm',
+        'value': 'env.BIFROST_VLLM_KEY',
+        'models': [bifrost_vllm_model],
+        'weight': 1.0,
+        'vllm_key_config': {
+          'url': bifrost_vllm_url,
+          'model_name': bifrost_vllm_model
+        }
+      }]
+    }
+  }
+} | to_nice_json(indent=2) }}

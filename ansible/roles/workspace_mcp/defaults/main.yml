@@ -1,0 +1,44 @@
+---
+# Google Workspace MCP server (taylorwilsdon/google_workspace_mcp), reached
+# only by Bifrost over a private Docker network. Off by default; enable per
+# node in host_vars.
+#
+# It runs in "external OAuth" mode: it never logs anyone in. Bifrost does each
+# person's Google login (per_user_oauth) and sends that person's Google access
+# token as Authorization: Bearer on every request. The server checks the token
+# against Google's userinfo API and calls Gmail with it, so it acts as whoever
+# sent the request and stores nothing.
+
+## On/off
+# Set false to stop the service, disable it and remove the unit and container.
+# The mcp Docker network is left in place.
+wmcp_enabled: false
+
+## Image
+# Pinned. Published by the project's own GitHub workflow for amd64 and arm64.
+wmcp_image: ghcr.io/taylorwilsdon/google_workspace_mcp:2.4.0
+wmcp_service_name: workspace-mcp
+wmcp_container_name: workspace-mcp
+wmcp_base_dir: /opt/workspace-mcp
+
+## Network
+# A user-defined Docker network shared with Bifrost, which reaches the server
+# as http://<container name>:<port>/mcp. Nothing is published on the host.
+wmcp_network: mcp
+wmcp_port: 8000
+
+## Tools
+# Space-separated --tools service names. Read-only mode asks only for read
+# scopes and drops every tool that writes. "core" is the smallest tool tier.
+wmcp_tools: gmail
+wmcp_read_only: true
+wmcp_tool_tier: core
+
+## Credentials, from .secrets/google-oauth.yml (loaded by site.yml)
+#   google_oauth_client_id: the Web OAuth client Bifrost logs people in with.
+# The server only needs the client id. The client secret stays with Bifrost;
+# a locally generated key signs the server's own JWTs instead.
+
+## Health check after (re)start
+wmcp_wait_for_health: true
+wmcp_health_timeout: 120
